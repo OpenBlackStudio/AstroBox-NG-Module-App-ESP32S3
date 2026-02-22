@@ -64,7 +64,6 @@ embedded-graphics-core = "0.4"
 slint = { version = "1.14.1", default-features = false, features = [
     "std",
     "renderer-software",
-    "unsafe-single-threaded",
     "compat-1-2"
 ] }
 

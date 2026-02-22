@@ -8,7 +8,6 @@ use esp_idf_svc::hal::{
     i2c::{config::Config as I2cConfig, I2cDriver, I2C0},
     units::Hertz,
 };
-use slint::SharedString;
 
 use crate::gui::slint_ui::{self, PointerAction, DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
@@ -77,10 +76,10 @@ fn handle_touch_event(event: CstTouchEvent, pointer_active: bool) -> Result<bool
         _ => "unknown",
     };
 
-    slint_ui::set_touch_text(SharedString::from(format!(
+    slint_ui::set_touch_text(format!(
         "Touch {action} ({x:.0}, {y:.0})",
         action = action_desc
-    )));
+    ));
 
     let mut still_active = pointer_active;
     match event.action {

@@ -12,6 +12,7 @@ pub struct PsramFirstAllocator;
 const PSRAM_CAPS: u32 = (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) as u32;
 const INTERNAL_CAPS: u32 = (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) as u32;
 const DEFAULT_ALIGNMENT: usize = core::mem::size_of::<usize>();
+const SMALL_ALLOC_INTERNAL_THRESHOLD: usize = 256;
 
 impl PsramFirstAllocator {
     #[inline(always)]
@@ -47,6 +48,15 @@ unsafe impl GlobalAlloc for PsramFirstAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if layout.size() == 0 {
             return Self::non_null_for_zero(&layout);
+        }
+
+        // Keep small control objects in internal RAM to reduce cache-related faults on ESP32-S3.
+        if layout.size() <= SMALL_ALLOC_INTERNAL_THRESHOLD {
+            let ptr = Self::alloc_with_caps(&layout, INTERNAL_CAPS);
+            if !ptr.is_null() {
+                return ptr;
+            }
+            return Self::alloc_with_caps(&layout, PSRAM_CAPS);
         }
 
         let ptr = Self::alloc_with_caps(&layout, PSRAM_CAPS);

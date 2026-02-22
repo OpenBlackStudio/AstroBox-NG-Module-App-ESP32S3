@@ -1,16 +1,14 @@
-use corelib::{
-    device::{
-        self,
-        xiaomi::{
-            components::{
-                resource::{ResourceComponent, ResourceSystem},
-                thirdparty_app::{AppInfo, ThirdpartyAppComponent, ThirdpartyAppSystem},
-            },
-            r#type::ConnectType,
-            SendError, XiaomiDevice,
+use corelib::device::{
+    self,
+    xiaomi::{
+        components::{
+            resource::{ResourceComponent, ResourceSystem},
+            thirdparty_app::{AppInfo, ThirdpartyAppComponent, ThirdpartyAppSystem},
         },
+        r#type::ConnectType,
+        SendError,
     },
-    ecs::{entity::EntityExt, logic_component::LogicComponent},
+    DeviceKind,
 };
 use esp32_nimble::{utilities::BleUuid, utilities::BleUuid::Uuid16, BLEDevice, BLEScan};
 use log::info;
@@ -37,6 +35,8 @@ fn uuid_contains(u: &BleUuid, needle: &str) -> bool {
 }
 
 pub async fn connect() -> anyhow::Result<()> {
+    crate::gui::slint_ui::set_device_connected(false);
+
     let mi_service = u16_uuid(0xFE95);
     let uuid_service_flag = u16_uuid(0x0050);
     let uuid_recv = u16_uuid(0x005E);
@@ -80,6 +80,7 @@ pub async fn connect() -> anyhow::Result<()> {
         let disconnect_reason = Arc::clone(&disconnect_reason);
         move |reason| {
             log::warn!("BLE disconnected (reason: {})", reason);
+            crate::gui::slint_ui::set_device_connected(false);
             if let Ok(mut slot) = disconnect_reason.lock() {
                 *slot = Some(reason);
             }
@@ -90,6 +91,7 @@ pub async fn connect() -> anyhow::Result<()> {
     info!("Connecting...");
     client.connect(&addr).await?;
     info!("Connected = {}", client.connected());
+    crate::gui::slint_ui::set_device_connected(true);
 
     let svc = client
         .get_service(mi_service)
@@ -210,8 +212,9 @@ pub async fn connect() -> anyhow::Result<()> {
         info!("0x005E doesn't support Notify");
     }
 
-    device::create_miwear_device(
+    device::create_device(
         handle.clone(),
+        DeviceKind::Xiaomi,
         device_name,
         device_addr.clone(),
         auth_key,
@@ -259,6 +262,7 @@ pub async fn connect() -> anyhow::Result<()> {
         Err(_) => None,
     };
     info!("Disconnected from {} (reason: {:?})", device_addr, reason);
+    crate::gui::slint_ui::set_device_connected(false);
 
     Ok(())
 }
@@ -268,19 +272,18 @@ async fn launch_watch_app(addr: &str, package: &str) -> anyhow::Result<()> {
     let addr_owned = addr.to_string();
     let info = app_info.clone();
     corelib::ecs::with_rt_mut(move |rt| {
-        let dev = rt
-            .find_entity_by_id_mut::<XiaomiDevice>(&addr_owned)
-            .ok_or_else(|| anyhow::anyhow!("device {} not found", addr_owned))?;
-        let component = dev
-            .get_component_as_mut::<ThirdpartyAppComponent>(ThirdpartyAppComponent::ID)
-            .map_err(|err| anyhow::anyhow!("third-party component unavailable: {:?}", err))?;
-        let system = component
-            .system_mut()
-            .as_any_mut()
-            .downcast_mut::<ThirdpartyAppSystem>()
-            .ok_or_else(|| anyhow::anyhow!("third-party system missing"))?;
-        system.launch_app(&info, "");
-        Ok(())
+        rt.with_device_mut(&addr_owned, |world, entity| {
+            // 确保第三方组件存在；新ECS里system与component是并列组件。
+            if world.get::<ThirdpartyAppComponent>(entity).is_none() {
+                return Err(anyhow::anyhow!("third-party component missing"));
+            }
+            let mut system = world
+                .get_mut::<ThirdpartyAppSystem>(entity)
+                .ok_or_else(|| anyhow::anyhow!("third-party system missing"))?;
+            system.launch_app(&info, "");
+            Ok(())
+        })
+        .unwrap_or_else(|| Err(anyhow::anyhow!("device {} not found", addr_owned)))
     })
     .await
 }
@@ -301,22 +304,22 @@ async fn lookup_cached_app_info(addr: &str, package: &str) -> anyhow::Result<Opt
     let addr_owned = addr.to_string();
     let package_owned = package.to_string();
     corelib::ecs::with_rt_mut(move |rt| {
-        let dev = rt
-            .find_entity_by_id_mut::<XiaomiDevice>(&addr_owned)
-            .ok_or_else(|| anyhow::anyhow!("device {} not found", addr_owned))?;
-        let component = match dev.get_component_as_mut::<ResourceComponent>(ResourceComponent::ID) {
-            Ok(comp) => comp,
-            Err(_) => return Ok(None),
-        };
-        let info = component
-            .quick_apps
-            .iter()
-            .find(|item| item.package_name == package_owned)
-            .map(|item| AppInfo {
-                package_name: item.package_name.clone(),
-                fingerprint: item.fingerprint.clone(),
-            });
-        Ok(info)
+        rt.with_device_mut(&addr_owned, |world, entity| {
+            let component = match world.get::<ResourceComponent>(entity) {
+                Some(comp) => comp,
+                None => return Ok(None),
+            };
+            let info = component
+                .quick_apps
+                .iter()
+                .find(|item| item.package_name == package_owned)
+                .map(|item| AppInfo {
+                    package_name: item.package_name.clone(),
+                    fingerprint: item.fingerprint.clone(),
+                });
+            Ok(info)
+        })
+        .unwrap_or_else(|| Err(anyhow::anyhow!("device {} not found", addr_owned)))
     })
     .await
 }
@@ -324,18 +327,16 @@ async fn lookup_cached_app_info(addr: &str, package: &str) -> anyhow::Result<Opt
 async fn refresh_quick_app_list(addr: &str) -> anyhow::Result<()> {
     let addr_owned = addr.to_string();
     let rx = corelib::ecs::with_rt_mut(move |rt| {
-        let dev = rt
-            .find_entity_by_id_mut::<XiaomiDevice>(&addr_owned)
-            .ok_or_else(|| anyhow::anyhow!("device {} not found", addr_owned))?;
-        let component = dev
-            .get_component_as_mut::<ResourceComponent>(ResourceComponent::ID)
-            .map_err(|err| anyhow::anyhow!("resource component unavailable: {:?}", err))?;
-        let system = component
-            .system_mut()
-            .as_any_mut()
-            .downcast_mut::<ResourceSystem>()
-            .ok_or_else(|| anyhow::anyhow!("resource system missing"))?;
-        Ok::<_, anyhow::Error>(system.request_quick_app_list())
+        rt.with_device_mut(&addr_owned, |world, entity| {
+            if world.get::<ResourceComponent>(entity).is_none() {
+                return Err(anyhow::anyhow!("resource component missing"));
+            }
+            let mut system = world
+                .get_mut::<ResourceSystem>(entity)
+                .ok_or_else(|| anyhow::anyhow!("resource system missing"))?;
+            Ok::<_, anyhow::Error>(system.request_quick_app_list())
+        })
+        .unwrap_or_else(|| Err(anyhow::anyhow!("device {} not found", addr_owned)))
     })
     .await?;
 

@@ -1,7 +1,10 @@
 use std::{
     cell::RefCell,
+    collections::VecDeque,
+    mem,
     ops::Range,
     rc::Rc,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -30,6 +33,10 @@ slint::include_modules!();
 
 pub const DISPLAY_WIDTH: usize = 240;
 pub const DISPLAY_HEIGHT: usize = 240;
+const MAX_PENDING_POINTER_EVENTS: usize = 64;
+const STATS_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+const ENABLE_DEBUG_STATS: bool = false;
+
 thread_local! {
     static PLATFORM_WINDOW: RefCell<Option<Rc<MinimalSoftwareWindow>>> =
         const { RefCell::new(None) };
@@ -37,36 +44,50 @@ thread_local! {
     static APP_INSTANCE: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
+static UI_UPDATES: OnceLock<Mutex<PendingUiUpdates>> = OnceLock::new();
+
+fn ui_updates() -> &'static Mutex<PendingUiUpdates> {
+    UI_UPDATES.get_or_init(|| Mutex::new(PendingUiUpdates::default()))
+}
+
+#[derive(Default)]
+struct PendingUiUpdates {
+    touch_text: Option<String>,
+    device_connected: Option<bool>,
+    device_status: Option<DeviceStatusUi>,
+    pointer_events: VecDeque<QueuedPointerEvent>,
+}
+
+#[derive(Clone, Copy)]
+struct QueuedPointerEvent {
+    action: PointerAction,
+    position: (f32, f32),
+}
+
+#[derive(Clone, Default)]
+pub struct DeviceStatusUi {
+    pub device_name: String,
+    pub battery_percent: i32,
+    pub charge_text: String,
+    pub net_up_text: String,
+    pub net_down_text: String,
+}
+
 pub fn render_hello_world(display: &mut DisplayType<'static>) -> Result<()> {
     let window = ensure_platform_window()?;
-    window.set_size(PhysicalSize::new(DISPLAY_WIDTH as _, DISPLAY_HEIGHT as _));
-    window.request_redraw();
 
     ensure_app()?;
+    apply_pending_ui_updates(&window);
 
     let frame_start = Instant::now();
-    let (displayed_fps, last_render_duration) =
-        FRAME_STATS.with(|cell| cell.borrow().snapshot_for_display());
-
-    let heap_bytes = unsafe { esp_get_free_heap_size() };
-    let fps_display = if displayed_fps > f32::EPSILON {
-        format!("{displayed_fps:.1}")
-    } else {
-        "--".to_string()
-    };
-    let render_display = if let Some(duration) = last_render_duration {
-        format!("{:.2}", duration.as_secs_f32() * 1_000.0)
-    } else {
-        "--".to_string()
-    };
-    let heap_kb = heap_bytes as f32 / 1024.0;
-    let stats_text = SharedString::from(format!(
-        "FPS: {fps}\nRender: {render} ms\nHeap: {heap:.1} KB",
-        fps = fps_display,
-        render = render_display,
-        heap = heap_kb
-    ));
-    set_stats_text(stats_text);
+    if ENABLE_DEBUG_STATS {
+        if let Some(stats_text) = FRAME_STATS.with(|cell| {
+            cell.borrow_mut()
+                .build_stats_text_if_due(frame_start, unsafe { esp_get_free_heap_size() })
+        }) {
+            set_stats_text(stats_text);
+        }
+    }
 
     platform::update_timers_and_animations();
 
@@ -74,7 +95,7 @@ pub fn render_hello_world(display: &mut DisplayType<'static>) -> Result<()> {
     let display_ptr: *mut DisplayType<'static> = display;
     let mut line_buffer = [Rgb565Pixel(0); DISPLAY_WIDTH];
 
-    while window.draw_if_needed(|renderer| {
+    if window.draw_if_needed(|renderer| {
         if render_error.borrow().is_some() {
             return;
         }
@@ -103,7 +124,7 @@ pub fn render_hello_world(display: &mut DisplayType<'static>) -> Result<()> {
     Ok(())
 }
 
-const MAX_BATCH_LINES: usize = 16;
+const MAX_BATCH_LINES: usize = 32;
 
 struct DisplayLineProvider<'a, 'b> {
     display: &'a mut DisplayType<'static>,
@@ -261,6 +282,7 @@ fn ensure_platform_window() -> Result<Rc<MinimalSoftwareWindow>> {
         }
 
         let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+        window.set_size(PhysicalSize::new(DISPLAY_WIDTH as _, DISPLAY_HEIGHT as _));
         let platform = SimplePlatform {
             window: window.clone(),
             start: Instant::now(),
@@ -301,14 +323,18 @@ struct FrameStats {
     last_frame_start: Option<Instant>,
     last_render_time: Option<Duration>,
     last_fps: f32,
+    last_stats_update: Option<Instant>,
+    last_stats_text: SharedString,
 }
 
 impl FrameStats {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             last_frame_start: None,
             last_render_time: None,
             last_fps: 0.0,
+            last_stats_update: None,
+            last_stats_text: SharedString::from(""),
         }
     }
 
@@ -328,6 +354,41 @@ impl FrameStats {
         self.last_frame_start = Some(frame_start);
         self.last_render_time = Some(render_time);
     }
+
+    fn build_stats_text_if_due(&mut self, now: Instant, heap_bytes: u32) -> Option<SharedString> {
+        if let Some(last) = self.last_stats_update {
+            if now.saturating_duration_since(last) < STATS_UPDATE_INTERVAL {
+                return None;
+            }
+        }
+
+        let (displayed_fps, last_render_duration) = self.snapshot_for_display();
+        let fps_display = if displayed_fps > f32::EPSILON {
+            format!("{displayed_fps:.1}")
+        } else {
+            "--".to_string()
+        };
+        let render_display = if let Some(duration) = last_render_duration {
+            format!("{:.2}", duration.as_secs_f32() * 1_000.0)
+        } else {
+            "--".to_string()
+        };
+        let heap_kb = heap_bytes as f32 / 1024.0;
+        let next_text = SharedString::from(format!(
+            "FPS: {fps}\nRender: {render} ms\nHeap: {heap:.1} KB",
+            fps = fps_display,
+            render = render_display,
+            heap = heap_kb
+        ));
+
+        self.last_stats_update = Some(now);
+        if next_text == self.last_stats_text {
+            return None;
+        }
+
+        self.last_stats_text = next_text.clone();
+        Some(next_text)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -338,9 +399,96 @@ pub enum PointerAction {
 }
 
 pub fn dispatch_pointer_action(action: PointerAction, position: (f32, f32)) -> Result<()> {
-    let window = ensure_platform_window()?;
+    let mut updates = match ui_updates().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if updates.pointer_events.len() >= MAX_PENDING_POINTER_EVENTS {
+        updates.pointer_events.pop_front();
+    }
+    updates
+        .pointer_events
+        .push_back(QueuedPointerEvent { action, position });
+    Ok(())
+}
+
+pub fn set_touch_text(stats: String) {
+    let mut updates = match ui_updates().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    updates.touch_text = Some(stats);
+}
+
+pub fn set_device_connected(connected: bool) {
+    let mut updates = match ui_updates().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    updates.device_connected = Some(connected);
+}
+
+pub fn set_device_status(status: DeviceStatusUi) {
+    let mut updates = match ui_updates().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    updates.device_status = Some(status);
+}
+
+fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
+    let (touch_text, device_connected, device_status, pointer_events) = {
+        let mut updates = match ui_updates().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        (
+            updates.touch_text.take(),
+            updates.device_connected.take(),
+            updates.device_status.take(),
+            mem::take(&mut updates.pointer_events),
+        )
+    };
+
+    if touch_text.is_none()
+        && device_connected.is_none()
+        && device_status.is_none()
+        && pointer_events.is_empty()
+    {
+        return;
+    }
+
+    APP_INSTANCE.with(|cell| {
+        if let Some(app) = cell.borrow().as_ref() {
+            if let Some(text) = touch_text {
+                app.set_touch_text(SharedString::from(text));
+            }
+            if let Some(connected) = device_connected {
+                app.set_connected(connected);
+            }
+            if let Some(status) = device_status {
+                app.set_device_name(SharedString::from(status.device_name));
+                app.set_battery_percent(status.battery_percent);
+                app.set_charge_text(SharedString::from(status.charge_text));
+                app.set_net_up_text(SharedString::from(status.net_up_text));
+                app.set_net_down_text(SharedString::from(status.net_down_text));
+            }
+        }
+    });
+
+    for event in pointer_events {
+        window.dispatch_event(pointer_to_window_event(event.action, event.position));
+    }
+    window.request_redraw();
+}
+
+fn pointer_to_window_event(
+    action: PointerAction,
+    position: (f32, f32),
+) -> slint::platform::WindowEvent {
     let logical_position = LogicalPosition::new(position.0, position.1);
-    let event = match action {
+    match action {
         PointerAction::Press => slint::platform::WindowEvent::PointerPressed {
             position: logical_position,
             button: PointerEventButton::Left,
@@ -352,21 +500,5 @@ pub fn dispatch_pointer_action(action: PointerAction, position: (f32, f32)) -> R
             position: logical_position,
             button: PointerEventButton::Left,
         },
-    };
-    window.dispatch_event(event);
-    window.request_redraw();
-    Ok(())
-}
-
-pub fn set_touch_text(stats: SharedString) {
-    APP_INSTANCE.with(|cell| {
-        if let Some(app) = cell.borrow().as_ref() {
-            app.set_touch_text(stats.clone());
-            PLATFORM_WINDOW.with(|window_cell| {
-                if let Some(window) = window_cell.borrow().as_ref() {
-                    window.request_redraw();
-                }
-            });
-        }
-    });
+    }
 }
