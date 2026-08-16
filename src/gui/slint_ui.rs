@@ -54,6 +54,7 @@ fn ui_updates() -> &'static Mutex<PendingUiUpdates> {
 struct PendingUiUpdates {
     touch_text: Option<String>,
     device_connected: Option<bool>,
+    connected_device_count: Option<i32>,
     device_status: Option<DeviceStatusUi>,
     pointer_events: VecDeque<QueuedPointerEvent>,
 }
@@ -429,6 +430,14 @@ pub fn set_device_connected(connected: bool) {
     updates.device_connected = Some(connected);
 }
 
+pub fn set_connected_device_count(count: usize) {
+    let mut updates = match ui_updates().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    updates.connected_device_count = Some(count as i32);
+}
+
 pub fn set_device_status(status: DeviceStatusUi) {
     let mut updates = match ui_updates().lock() {
         Ok(guard) => guard,
@@ -438,7 +447,7 @@ pub fn set_device_status(status: DeviceStatusUi) {
 }
 
 fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
-    let (touch_text, device_connected, device_status, pointer_events) = {
+    let (touch_text, device_connected, connected_device_count, device_status, pointer_events) = {
         let mut updates = match ui_updates().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -446,6 +455,7 @@ fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
         (
             updates.touch_text.take(),
             updates.device_connected.take(),
+            updates.connected_device_count.take(),
             updates.device_status.take(),
             mem::take(&mut updates.pointer_events),
         )
@@ -453,6 +463,7 @@ fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
 
     if touch_text.is_none()
         && device_connected.is_none()
+        && connected_device_count.is_none()
         && device_status.is_none()
         && pointer_events.is_empty()
     {
@@ -466,6 +477,9 @@ fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
             }
             if let Some(connected) = device_connected {
                 app.set_connected(connected);
+            }
+            if let Some(count) = connected_device_count {
+                app.set_connected_device_count(count);
             }
             if let Some(status) = device_status {
                 app.set_device_name(SharedString::from(status.device_name));
