@@ -18,6 +18,11 @@ type DisplayInterface<'d> = SpiInterface<'d, SpiDeviceDriver<'d, SpiDriver<'d>>,
 pub type DisplayType<'d> = mipidsi::Display<DisplayInterface<'d>, GC9A01, DisplayRstPin<'d>>;
 
 const DISPLAY_SPI_BUFFER_SIZE: usize = 1024;
+// SAFETY: This buffer is accessed only from the display initialization function
+// which runs in a single-threaded context (no race conditions). The buffer is
+// 'static (lives for the entire program) and is used exclusively as a DMA
+// transfer buffer for the SPI interface. The mutable reference is created
+// once during init and never shared or aliased.
 static mut DISPLAY_SPI_BUFFER: [u8; DISPLAY_SPI_BUFFER_SIZE] = [0; DISPLAY_SPI_BUFFER_SIZE];
 
 pub struct DisplayPins {
@@ -69,6 +74,9 @@ pub fn init_display_gc9a01(
         &SpiConfig::new().baudrate(40_000_000.into()),
     )?;
 
+    // SAFETY: DISPLAY_SPI_BUFFER is a static mut buffer that is only accessed
+    // from this single initialization path (single-threaded). The buffer is
+    // valid for 'static lifetime and will not be concurrently accessed.
     #[allow(static_mut_refs)]
     let buffer: &'static mut [u8] = unsafe { &mut DISPLAY_SPI_BUFFER };
     let di = SpiInterface::new(spi_dev, dc, buffer);

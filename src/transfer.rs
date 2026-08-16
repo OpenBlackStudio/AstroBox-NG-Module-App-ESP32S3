@@ -2,8 +2,7 @@ use corelib::{
     device::xiaomi::{
         components::{
             mass::{
-                MassComponent, MassSystem, ReceiveMassCallbackData, ReverseMassReceiveResult,
-                SendMassCallbackData,
+                MassComponent, MassSystem, SendMassCallbackData,
             },
             thirdparty_app::{AppInfo, ThirdpartyAppComponent, ThirdpartyAppSystem},
         },
@@ -409,44 +408,5 @@ pub async fn get_device_info(addr: &str) -> anyhow::Result<String> {
 }
 
 async fn resolve_app_info(addr: &str, package_name: &str) -> anyhow::Result<AppInfo> {
-    let addr_owned = addr.to_string();
-    let pkg_owned = package_name.to_string();
-    let (tx, rx) = oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            let component = match world.get::<corelib::device::xiaomi::components::resource::ResourceComponent>(entity) {
-                Some(c) => c,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ResourceComponent missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            let info = component
-                .quick_apps
-                .iter()
-                .find(|item| item.package_name == pkg_owned)
-                .map(|item| AppInfo {
-                    package_name: item.package_name.clone(),
-                    fingerprint: item.fingerprint.clone(),
-                });
-            match info {
-                Some(i) => {
-                    let _ = tx.send(Ok(i));
-                }
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "App {} not found on device {}",
-                        pkg_owned, addr_owned
-                    )));
-                }
-            }
-        });
-    })
-    .await;
-
-    rx.await?
+    crate::install::resolve_app_info(addr, package_name).await
 }

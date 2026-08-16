@@ -4,4 +4,3 @@ firmware.bin
 /.vscode
 /.embuild
 /target
-/Cargo.lock

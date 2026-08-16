@@ -31,9 +31,15 @@ const APPLE_MANUFACTURER_DATA: [u8; 4] = [0x4C, 0x00, 0x02, 0x15];
 pub fn init_fake_ancs_service(ble: &mut BLEDevice) -> Result<()> {
     {
         let security = ble.security();
+        // Using KeyboardDisplay I/O capability instead of NoInputNoOutput.
+        // NoInputNoOutput allows passive attackers to brute-force the encryption
+        // key (up to 1.6M attempts). KeyboardDisplay provides a stronger security
+        // model with explicit user confirmation for pairing, which is the
+        // recommended approach for ANCS services even though this is a fake
+        // (ghost) implementation that only echoes dummy notification data.
         security
             .set_auth(AuthReq::Bond | AuthReq::Sc)
-            .set_io_cap(SecurityIOCap::NoInputNoOutput)
+            .set_io_cap(SecurityIOCap::KeyboardDisplay)
             .set_security_init_key(PairKeyDist::ENC | PairKeyDist::ID)
             .set_security_resp_key(PairKeyDist::ENC | PairKeyDist::ID);
     }

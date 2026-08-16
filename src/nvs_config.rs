@@ -3,6 +3,7 @@ use esp_idf_svc::sys::{
     ESP_ERR_NVS_NOT_FOUND, ESP_OK,
 };
 use std::ffi::CString;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
 const NVS_NAMESPACE: &str = "wifi_cfg";
@@ -13,31 +14,39 @@ const NVS_READWRITE: u32 = 0x00000002;
 const NVS_READONLY: u32 = 0x00000001;
 
 static NVS_INIT: Once = Once::new();
-static mut NVS_INIT_OK: bool = false;
+static NVS_INIT_OK: AtomicBool = AtomicBool::new(false);
 
 pub fn ensure_nvs_initialized() -> bool {
     NVS_INIT.call_once(|| {
+        // SAFETY: nvs_flash_init() is called exactly once via Once::call_once.
+        // This is the correct initialization pattern for ESP-IDF NVS in a
+        // single-process embedded environment.
         let ret = unsafe { nvs_flash_init() };
         if ret == ESP_OK || ret == ESP_ERR_NVS_NOT_FOUND {
-            unsafe {
-                NVS_INIT_OK = true;
-            }
+            NVS_INIT_OK.store(true, Ordering::Release);
         } else {
             log::error!("nvs_flash_init failed: {ret}");
         }
     });
-    unsafe { NVS_INIT_OK }
+    NVS_INIT_OK.load(Ordering::Acquire)
 }
 
 pub fn load_wifi_credentials() -> (String, String) {
-    let default_ssid = env!("DEFAULT_WIFI_SSID", "ASUS_AX86U_2.4G").to_string();
-    let default_password = env!("DEFAULT_WIFI_PASSWORD", "reveries2005").to_string();
+    let default_ssid = env!("DEFAULT_WIFI_SSID", "").to_string();
+    let default_password = env!("DEFAULT_WIFI_PASSWORD", "").to_string();
 
     if let Ok(ssid) = nvs_get_string(SSID_KEY) {
         if !ssid.is_empty() {
             let password = nvs_get_string(PASSWORD_KEY).unwrap_or(default_password.clone());
             return (ssid, password);
         }
+    }
+
+    if default_ssid.is_empty() {
+        log::warn!(
+            "No Wi-Fi credentials configured. Set DEFAULT_WIFI_SSID/DEFAULT_WIFI_PASSWORD \
+             at compile time or configure via NVS at runtime."
+        );
     }
 
     (default_ssid, default_password)
@@ -58,6 +67,8 @@ fn nvs_get_string(key: &str) -> Result<String, String> {
     let c_ns = CString::new(NVS_NAMESPACE).map_err(|e| e.to_string())?;
 
     let mut handle: esp_idf_svc::sys::nvs_handle_t = 0;
+    // SAFETY: nvs_open returns a handle that must be closed after use.
+    // The handle is only used within this function scope.
     let ret = unsafe { nvs_open(c_ns.as_ptr(), NVS_READONLY, &mut handle) };
     if ret != ESP_OK {
         return Err(format!("nvs_open failed: {ret}"));
@@ -65,8 +76,11 @@ fn nvs_get_string(key: &str) -> Result<String, String> {
 
     let mut buf = vec![0u8; MAX_STR_SIZE];
     let mut len = buf.len() as u32;
+    // SAFETY: buf is a valid mutable slice of MAX_STR_SIZE bytes,
+    // len is properly initialized to buf.len().
     let ret = unsafe { nvs_get_str(handle, c_key.as_ptr(), buf.as_mut_ptr(), &mut len) };
 
+    // SAFETY: handle was opened above and must be closed.
     unsafe { nvs_close(handle) };
 
     if ret != ESP_OK {
@@ -89,23 +103,29 @@ fn nvs_set_string(key: &str, value: &str) -> Result<(), String> {
     let c_ns = CString::new(NVS_NAMESPACE).map_err(|e| e.to_string())?;
 
     let mut handle: esp_idf_svc::sys::nvs_handle_t = 0;
+    // SAFETY: nvs_open returns a handle that must be closed after use.
     let ret = unsafe { nvs_open(c_ns.as_ptr(), NVS_READWRITE, &mut handle) };
     if ret != ESP_OK {
         return Err(format!("nvs_open failed: {ret}"));
     }
 
+    // SAFETY: handle is valid from the nvs_open call above.
     let ret = unsafe { nvs_set_str(handle, c_key.as_ptr(), c_value.as_ptr()) };
     if ret != ESP_OK {
+        // SAFETY: handle was opened, must be closed on error path too.
         unsafe { nvs_close(handle) };
         return Err(format!("nvs_set_str failed: {ret}"));
     }
 
+    // SAFETY: handle is valid, committing a write transaction.
     let ret = unsafe { nvs_commit(handle) };
     if ret != ESP_OK {
+        // SAFETY: handle was opened, must be closed on error path too.
         unsafe { nvs_close(handle) };
         return Err(format!("nvs_commit failed: {ret}"));
     }
 
+    // SAFETY: handle was opened above, closing it to release resources.
     unsafe { nvs_close(handle) };
     Ok(())
 }

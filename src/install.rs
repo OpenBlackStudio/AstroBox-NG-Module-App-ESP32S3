@@ -14,6 +14,71 @@ use log::{error, info, warn};
 use std::path::Path;
 use tokio::fs;
 
+pub(crate) async fn with_device_async<F, T>(
+    addr: &str,
+    f: F,
+) -> anyhow::Result<T>
+where
+    F: FnOnce(&mut corelib::ecs::World, corelib::ecs::Entity) -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let addr_owned = addr.to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    ecs::with_rt_mut(move |rt| {
+        rt.with_device_mut(&addr_owned, |world, entity| {
+            let result = f(world, entity);
+            let _ = tx.send(result);
+        });
+    })
+    .await;
+
+    rx.await?
+}
+
+pub(crate) async fn resolve_app_info(addr: &str, package_name: &str) -> anyhow::Result<AppInfo> {
+    let addr_owned = addr.to_string();
+    let pkg_owned = package_name.to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    ecs::with_rt_mut(move |rt| {
+        rt.with_device_mut(&addr_owned, |world, entity| {
+            let component = match world.get::<ResourceComponent>(entity) {
+                Some(c) => c,
+                None => {
+                    let _ = tx.send(Err(anyhow::anyhow!(
+                        "ResourceComponent missing on device {}",
+                        addr_owned
+                    )));
+                    return;
+                }
+            };
+            let info = component
+                .quick_apps
+                .iter()
+                .find(|item| item.package_name == pkg_owned)
+                .map(|item| AppInfo {
+                    package_name: item.package_name.clone(),
+                    fingerprint: item.fingerprint.clone(),
+                });
+            match info {
+                Some(i) => {
+                    let _ = tx.send(Ok(i));
+                }
+                None => {
+                    let _ = tx.send(Err(anyhow::anyhow!(
+                        "App {} not found on device {}",
+                        pkg_owned, addr_owned
+                    )));
+                }
+            }
+        });
+    })
+    .await;
+
+    rx.await??
+}
+
 pub async fn list_installed_watchfaces(addr: &str) -> anyhow::Result<Vec<String>> {
     let addr = addr.to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -383,50 +448,6 @@ pub async fn launch_quick_app(addr: &str, package_name: &str) -> anyhow::Result<
 
     rx.await??;
     Ok(())
-}
-
-async fn resolve_app_info(addr: &str, package_name: &str) -> anyhow::Result<AppInfo> {
-    let addr_owned = addr.to_string();
-    let pkg_owned = package_name.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            let component = match world.get::<ResourceComponent>(entity) {
-                Some(c) => c,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ResourceComponent missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            let info = component
-                .quick_apps
-                .iter()
-                .find(|item| item.package_name == pkg_owned)
-                .map(|item| AppInfo {
-                    package_name: item.package_name.clone(),
-                    fingerprint: item.fingerprint.clone(),
-                });
-            match info {
-                Some(i) => {
-                    let _ = tx.send(Ok(i));
-                }
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "App {} not found in installed list on {}",
-                        pkg_owned,
-                        addr_owned
-                    )));
-                }
-            }
-        });
-    })
-    .await;
-
-    rx.await??
 }
 
 pub async fn send_phone_message(

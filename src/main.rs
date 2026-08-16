@@ -1,3 +1,14 @@
+#![allow(dead_code)]
+//! AstroBox-NG Module firmware entry point.
+//!
+//! This crate wires together Wi-Fi, BLE, NVS configuration, OTA stub,
+//! GUI rendering and device-to-device transfer APIs for the ESP32-S3.
+//!
+//! Public functions in this file serve as a thin host-facing API surface
+//! (for future remote-control / RPC integration) and are annotated with
+//! `#[allow(dead_code)]` at the crate level because they are not yet
+//! invoked by any internal code path.
+
 use core::convert::TryInto;
 
 use anyhow::anyhow;
@@ -83,7 +94,7 @@ async fn run_app() -> anyhow::Result<()> {
     }
 
     if let Some(initial_ota) = ota_manager.check_for_update() {
-        info!(
+        log::debug!(
             "OTA update available: v{} ({} bytes)",
             initial_ota.version, initial_ota.size
         );
@@ -306,8 +317,11 @@ async fn ota_check_loop(manager: std::sync::Arc<ota::OtaManager>) {
     let mut ticker = tokio::time::interval(OTA_CHECK_INTERVAL);
     loop {
         ticker.tick().await;
+        // The OTA manager is still a stub; `check_for_update` always returns
+        // `None` for now. Keep this branch in place so the wiring is ready
+        // once the real OTA backend is plugged in.
         if let Some(info) = manager.check_for_update() {
-            info!(
+            log::debug!(
                 "OTA update available: v{} ({} bytes, {}, url: {})",
                 info.version, info.size, info.release_notes, info.url
             );
@@ -469,7 +483,6 @@ async fn log_device_roster() {
     }
 }
 
-#[allow(dead_code)]
 fn init_wifi(modem: Modem, ssid: &str, password: &str) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -585,7 +598,6 @@ async fn sync_installed_items() {
     }
 }
 
-#[allow(dead_code)]
 pub async fn install_quick_app_on_device(
     addr: &str,
     package_name: &str,
@@ -594,7 +606,6 @@ pub async fn install_quick_app_on_device(
     install::install_quick_app(addr, package_name, data).await
 }
 
-#[allow(dead_code)]
 pub async fn install_quick_app_file_on_device(
     addr: &str,
     package_name: &str,
@@ -603,7 +614,6 @@ pub async fn install_quick_app_file_on_device(
     install::install_quick_app_from_file(addr, package_name, file_path).await
 }
 
-#[allow(dead_code)]
 pub async fn install_watchface_on_device(
     addr: &str,
     data: Vec<u8>,
@@ -611,7 +621,6 @@ pub async fn install_watchface_on_device(
     install::install_watchface(addr, data).await
 }
 
-#[allow(dead_code)]
 pub async fn install_watchface_file_on_device(
     addr: &str,
     file_path: &str,
@@ -619,7 +628,6 @@ pub async fn install_watchface_file_on_device(
     install::install_watchface_from_file(addr, file_path).await
 }
 
-#[allow(dead_code)]
 pub async fn uninstall_quick_app_on_device(
     addr: &str,
     package_name: &str,
@@ -627,7 +635,6 @@ pub async fn uninstall_quick_app_on_device(
     install::uninstall_quick_app(addr, package_name).await
 }
 
-#[allow(dead_code)]
 pub async fn uninstall_watchface_on_device(
     addr: &str,
     watchface_id: &str,
@@ -635,7 +642,6 @@ pub async fn uninstall_watchface_on_device(
     install::uninstall_watchface(addr, watchface_id).await
 }
 
-#[allow(dead_code)]
 pub async fn set_watchface_on_device(
     addr: &str,
     watchface_id: &str,
@@ -643,7 +649,6 @@ pub async fn set_watchface_on_device(
     install::set_watchface(addr, watchface_id).await
 }
 
-#[allow(dead_code)]
 pub async fn launch_quick_app_on_device(
     addr: &str,
     package_name: &str,
@@ -653,7 +658,6 @@ pub async fn launch_quick_app_on_device(
 
 // ===== Transfer module public API =====
 
-#[allow(dead_code)]
 pub async fn send_data_to_device(
     addr: &str,
     data_type: corelib::device::xiaomi::packet::mass::MassDataType,
@@ -662,7 +666,6 @@ pub async fn send_data_to_device(
     transfer::send_data_to_device(addr, data_type, data).await
 }
 
-#[allow(dead_code)]
 pub async fn forward_app_message_between_devices(
     src_addr: &str,
     dst_addr: &str,
@@ -672,7 +675,6 @@ pub async fn forward_app_message_between_devices(
     transfer::forward_app_message(src_addr, dst_addr, package_name, payload).await
 }
 
-#[allow(dead_code)]
 pub async fn relay_interconnect_between_devices(
     src_addr: &str,
     dst_addr: &str,
@@ -680,7 +682,6 @@ pub async fn relay_interconnect_between_devices(
     transfer::relay_interconnect_message(src_addr, dst_addr).await
 }
 
-#[allow(dead_code)]
 pub async fn copy_quick_app_between_devices(
     src_addr: &str,
     dst_addr: &str,
@@ -689,7 +690,6 @@ pub async fn copy_quick_app_between_devices(
     transfer::transfer_quick_app_between_devices(src_addr, dst_addr, package_name).await
 }
 
-#[allow(dead_code)]
 pub async fn copy_watchface_between_devices(
     src_addr: &str,
     dst_addr: &str,
@@ -698,7 +698,6 @@ pub async fn copy_watchface_between_devices(
     transfer::transfer_watchface_between_devices(src_addr, dst_addr, watchface_id).await
 }
 
-#[allow(dead_code)]
 pub async fn broadcast_data_to_all_devices(
     data_type: corelib::device::xiaomi::packet::mass::MassDataType,
     data: Vec<u8>,
@@ -706,12 +705,10 @@ pub async fn broadcast_data_to_all_devices(
     transfer::broadcast_data_to_all_devices(data_type, data).await
 }
 
-#[allow(dead_code)]
 pub async fn list_connected_devices() -> Vec<String> {
     transfer::list_connected_devices().await
 }
 
-#[allow(dead_code)]
 pub async fn get_device_name(addr: &str) -> anyhow::Result<String> {
     transfer::get_device_info(addr).await
 }

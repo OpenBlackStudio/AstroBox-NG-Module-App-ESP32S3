@@ -381,7 +381,17 @@ async fn connect_one_device(
     };
 
     let device_addr = addr.to_string();
-    let auth_key = "fd0ce943010e5112c6a35cb3ea61b968".to_string();
+    // BLE authentication key for Xiaomi wearable protocol.
+    // Configure at compile time via MIWEAR_AUTH_KEY env var (32-char hex string).
+    // Example: MIWEAR_AUTH_KEY=fd0ce943010e5112c6a35cb3ea61b968
+    // An empty string means "no auth key" and will likely fail device authentication.
+    let auth_key = env!("MIWEAR_AUTH_KEY", "").to_string();
+    if auth_key.is_empty() {
+        log::warn!(
+            "No MiWear auth key configured. Set MIWEAR_AUTH_KEY at compile time \
+             or configure via NVS for production use."
+        );
+    }
     let sar_version = 2;
 
     if ch_recv.can_notify() {

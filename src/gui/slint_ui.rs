@@ -101,7 +101,10 @@ pub fn render_hello_world(display: &mut DisplayType<'static>) -> Result<()> {
             return;
         }
 
-        // Safety: the draw loop is single-threaded and guarantees no aliasing with other uses.
+        // SAFETY: The draw loop is single-threaded and guarantees no aliasing
+        // with other uses of the display. The raw pointer is created from a
+        // valid &mut reference passed to render_hello_world and only used within
+        // this closure. The 'static lifetime is guaranteed by the function signature.
         let display_ref = unsafe { &mut *display_ptr };
         let mut provider = DisplayLineProvider::new(display_ref, &mut line_buffer, &render_error);
         renderer.render_by_line(&mut provider);
