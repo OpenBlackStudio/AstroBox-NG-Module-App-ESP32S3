@@ -19,6 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod allocator;
 pub mod gui;
+pub mod install;
 pub mod miwear;
 pub mod nvs_config;
 pub mod ota;
@@ -186,6 +187,14 @@ async fn run_app() -> anyhow::Result<()> {
     tokio::task::spawn_local(async {
         if let Err(err) = miwear::connect_with_retry().await {
             log::error!("miwear connect loop exited: {err:?}");
+        }
+    });
+
+    tokio::task::spawn_local(async {
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            sync_installed_items().await;
         }
     });
 
@@ -480,4 +489,117 @@ async fn wifi_reconnect_watchdog(
             }
         }
     }
+}
+
+async fn sync_installed_items() {
+    let device_ids = corelib::ecs::with_rt_mut(|rt| {
+        rt.device_ids().cloned().collect::<Vec<_>>()
+    })
+    .await;
+
+    if device_ids.is_empty() {
+        return;
+    }
+
+    for addr in &device_ids {
+        match install::list_installed_watchfaces(addr).await {
+            Ok(faces) => {
+                log::info!(
+                    "[Install] Device {} has {} watchface(s): {:?}",
+                    addr,
+                    faces.len(),
+                    faces
+                );
+            }
+            Err(err) => {
+                log::debug!(
+                    "[Install] Failed to list watchfaces on {}: {err:?}",
+                    addr
+                );
+            }
+        }
+
+        match install::list_installed_quick_apps(addr).await {
+            Ok(apps) => {
+                log::info!(
+                    "[Install] Device {} has {} quick app(s): {:?}",
+                    addr,
+                    apps.len(),
+                    apps
+                );
+            }
+            Err(err) => {
+                log::debug!(
+                    "[Install] Failed to list quick apps on {}: {err:?}",
+                    addr
+                );
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub async fn install_quick_app_on_device(
+    addr: &str,
+    package_name: &str,
+    data: Vec<u8>,
+) -> anyhow::Result<()> {
+    install::install_quick_app(addr, package_name, data).await
+}
+
+#[allow(dead_code)]
+pub async fn install_quick_app_file_on_device(
+    addr: &str,
+    package_name: &str,
+    file_path: &str,
+) -> anyhow::Result<()> {
+    install::install_quick_app_from_file(addr, package_name, file_path).await
+}
+
+#[allow(dead_code)]
+pub async fn install_watchface_on_device(
+    addr: &str,
+    data: Vec<u8>,
+) -> anyhow::Result<()> {
+    install::install_watchface(addr, data).await
+}
+
+#[allow(dead_code)]
+pub async fn install_watchface_file_on_device(
+    addr: &str,
+    file_path: &str,
+) -> anyhow::Result<()> {
+    install::install_watchface_from_file(addr, file_path).await
+}
+
+#[allow(dead_code)]
+pub async fn uninstall_quick_app_on_device(
+    addr: &str,
+    package_name: &str,
+) -> anyhow::Result<()> {
+    install::uninstall_quick_app(addr, package_name).await
+}
+
+#[allow(dead_code)]
+pub async fn uninstall_watchface_on_device(
+    addr: &str,
+    watchface_id: &str,
+) -> anyhow::Result<()> {
+    install::uninstall_watchface(addr, watchface_id).await
+}
+
+#[allow(dead_code)]
+pub async fn set_watchface_on_device(
+    addr: &str,
+    watchface_id: &str,
+) -> anyhow::Result<()> {
+    install::set_watchface(addr, watchface_id).await
+}
+
+#[allow(dead_code)]
+pub async fn launch_quick_app_on_device(
+    addr: &str,
+    package_name: &str,
+) -> anyhow::Result<()> {
+    install::launch_quick_app(addr, package_name).await
 }

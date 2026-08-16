@@ -14,6 +14,35 @@
 - 按设备地址（MAC）稳定追踪，避免索引偏移导致的错误断开
 - 单台设备断开仅重连该设备，其他设备保持连接
 
+### 快应用与表盘管理
+- **快应用安装**: 向设备推送 `.pk` 格式快应用包（基于 `MassDataType::ThirdPartyApp`）
+- **表盘安装**: 向设备推送 `.bin` 格式表盘文件（基于 `MassDataType::Watchface`）
+- **安装进度**: 通过 BLE Mass 协议分块传输，自带 MD5 校验和 CRC32 完整性验证
+- **列表查询**: 查询设备已安装的快应用列表和表盘列表
+- **快应用管理**: 启动、卸载快应用
+- **表盘管理**: 切换当前表盘、卸载表盘
+- **电话消息桥接**: 向设备上的快应用发送电话端消息
+- 周期性（30秒）自动同步各设备的已安装项目状态
+
+#### API 一览
+
+```rust
+// 快应用
+install::install_quick_app(addr, package_name, data).await?;
+install::install_quick_app_from_file(addr, package_name, file_path).await?;
+install::uninstall_quick_app(addr, package_name).await?;
+install::launch_quick_app(addr, package_name).await?;
+install::list_installed_quick_apps(addr).await?;
+install::send_phone_message(addr, package_name, payload).await?;
+
+// 表盘
+install::install_watchface(addr, data).await?;
+install::install_watchface_from_file(addr, file_path).await?;
+install::uninstall_watchface(addr, watchface_id).await?;
+install::set_watchface(addr, watchface_id).await?;
+install::list_installed_watchfaces(addr).await?;
+```
+
 ### 网络与连接
 - Wi-Fi 自动重连看门狗（10 秒间隔检测）
 - Wi-Fi 凭据 NVS 持久化存储（SSID / 密码跨重启保存）
