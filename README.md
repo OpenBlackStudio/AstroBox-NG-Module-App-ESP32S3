@@ -43,6 +43,36 @@ install::set_watchface(addr, watchface_id).await?;
 install::list_installed_watchfaces(addr).await?;
 ```
 
+### 设备间数据传输
+- **快应用跨设备复制**: 从设备 A 读取快应用包，安装到设备 B
+- **表盘跨设备复制**: 从设备 A 读取表盘数据，安装到设备 B
+- **应用消息桥接**: 将一个设备上的快应用消息转发到另一个设备的同名快应用
+- **互联消息中继**: 实时监听设备的互联消息事件，自动中继到目标设备
+- **数据广播**: 向所有已连接设备发送同一份数据
+- **设备资源管理**: 查询设备列表、获取设备名称
+- 传输进度回调支持（Mass 文件分块传输）
+
+#### API 一览
+
+```rust
+// 文件/数据传输
+transfer::send_data_to_device(addr, data_type, data).await?;
+transfer::send_data_to_device_with_progress(addr, data_type, data, cb).await?;
+transfer::broadcast_data_to_all_devices(data_type, data).await?;
+
+// 内容复制
+transfer::transfer_quick_app_between_devices(src, dst, pkg).await?;
+transfer::transfer_watchface_between_devices(src, dst, face_id).await?;
+
+// 消息桥接
+transfer::forward_app_message(src, dst, pkg, payload).await?;
+transfer::relay_interconnect_message(src, dst).await?;  // 返回 JoinHandle
+
+// 设备管理
+transfer::list_connected_devices().await;
+transfer::get_device_info(addr).await?;
+```
+
 ### 网络与连接
 - Wi-Fi 自动重连看门狗（10 秒间隔检测）
 - Wi-Fi 凭据 NVS 持久化存储（SSID / 密码跨重启保存）

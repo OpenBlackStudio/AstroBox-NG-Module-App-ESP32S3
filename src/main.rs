@@ -25,6 +25,7 @@ pub mod nvs_config;
 pub mod ota;
 pub mod statlogger;
 pub mod touch;
+pub mod transfer;
 
 const WIFI_RECONNECT_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 const WIFI_INIT_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -195,6 +196,27 @@ async fn run_app() -> anyhow::Result<()> {
         loop {
             ticker.tick().await;
             sync_installed_items().await;
+            log_device_roster().await;
+        }
+    });
+
+    tokio::task::spawn_local(async {
+        let mut ticker = tokio::time::interval(Duration::from_secs(10));
+        let mut last_count: usize = 0;
+        loop {
+            ticker.tick().await;
+            let devices = corelib::ecs::with_rt_mut(|rt| {
+                rt.device_ids().cloned().collect::<Vec<_>>()
+            })
+            .await;
+            if devices.len() != last_count {
+                log::info!(
+                    "[Transfer] Device roster: {} device(s) connected → {:?}",
+                    devices.len(),
+                    devices
+                );
+                last_count = devices.len();
+            }
         }
     });
 
@@ -422,6 +444,31 @@ fn format_speed_text(speed_bps: f64, arrow: &str) -> String {
     }
 }
 
+async fn log_device_roster() {
+    let device_ids = corelib::ecs::with_rt_mut(|rt| {
+        rt.device_ids().cloned().collect::<Vec<_>>()
+    })
+    .await;
+
+    if device_ids.is_empty() {
+        return;
+    }
+
+    for addr in &device_ids {
+        match transfer::get_device_info(addr).await {
+            Ok(name) => {
+                log::info!("[Transfer] Device: {} ({})", name, addr);
+            }
+            Err(err) => {
+                log::debug!(
+                    "[Transfer] Failed to get name for {}: {err:?}",
+                    addr
+                );
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn init_wifi(modem: Modem, ssid: &str, password: &str) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
     let sys_loop = EspSystemEventLoop::take()?;
@@ -602,4 +649,69 @@ pub async fn launch_quick_app_on_device(
     package_name: &str,
 ) -> anyhow::Result<()> {
     install::launch_quick_app(addr, package_name).await
+}
+
+// ===== Transfer module public API =====
+
+#[allow(dead_code)]
+pub async fn send_data_to_device(
+    addr: &str,
+    data_type: corelib::device::xiaomi::packet::mass::MassDataType,
+    data: Vec<u8>,
+) -> anyhow::Result<()> {
+    transfer::send_data_to_device(addr, data_type, data).await
+}
+
+#[allow(dead_code)]
+pub async fn forward_app_message_between_devices(
+    src_addr: &str,
+    dst_addr: &str,
+    package_name: &str,
+    payload: Vec<u8>,
+) -> anyhow::Result<()> {
+    transfer::forward_app_message(src_addr, dst_addr, package_name, payload).await
+}
+
+#[allow(dead_code)]
+pub async fn relay_interconnect_between_devices(
+    src_addr: &str,
+    dst_addr: &str,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    transfer::relay_interconnect_message(src_addr, dst_addr).await
+}
+
+#[allow(dead_code)]
+pub async fn copy_quick_app_between_devices(
+    src_addr: &str,
+    dst_addr: &str,
+    package_name: &str,
+) -> anyhow::Result<()> {
+    transfer::transfer_quick_app_between_devices(src_addr, dst_addr, package_name).await
+}
+
+#[allow(dead_code)]
+pub async fn copy_watchface_between_devices(
+    src_addr: &str,
+    dst_addr: &str,
+    watchface_id: &str,
+) -> anyhow::Result<()> {
+    transfer::transfer_watchface_between_devices(src_addr, dst_addr, watchface_id).await
+}
+
+#[allow(dead_code)]
+pub async fn broadcast_data_to_all_devices(
+    data_type: corelib::device::xiaomi::packet::mass::MassDataType,
+    data: Vec<u8>,
+) -> anyhow::Result<Vec<(String, anyhow::Result<()>)>> {
+    transfer::broadcast_data_to_all_devices(data_type, data).await
+}
+
+#[allow(dead_code)]
+pub async fn list_connected_devices() -> Vec<String> {
+    transfer::list_connected_devices().await
+}
+
+#[allow(dead_code)]
+pub async fn get_device_name(addr: &str) -> anyhow::Result<String> {
+    transfer::get_device_info(addr).await
 }
