@@ -20,11 +20,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod allocator;
 pub mod gui;
 pub mod miwear;
+pub mod nvs_config;
+pub mod ota;
 pub mod statlogger;
 pub mod touch;
 
-const WIFI_SSID: &str = "ASUS_AX86U_2.4G";
-const WIFI_PASSWORD: &str = "reveries2005";
+const WIFI_RECONNECT_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+const WIFI_INIT_RETRY_DELAY: Duration = Duration::from_secs(5);
+const WIFI_INIT_MAX_RETRIES: u32 = 5;
+const OTA_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 const ECS_STACK_SIZE: usize = 32 * 1024;
 const TARGET_FPS: u64 = 30;
 const UI_BATTERY_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
@@ -46,6 +50,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run_app() -> anyhow::Result<()> {
+    nvs_config::ensure_nvs_initialized();
+
     let Peripherals {
         pins,
         ledc,
@@ -55,7 +61,31 @@ async fn run_app() -> anyhow::Result<()> {
         ..
     } = Peripherals::take()?;
 
-    let _wifi = init_wifi(modem)?;
+    let (wifi_ssid, wifi_password) = nvs_config::load_wifi_credentials();
+    let mut wifi = init_wifi_with_retry(modem, &wifi_ssid, &wifi_password).await?;
+
+    if let Err(e) = nvs_config::save_wifi_credentials(&wifi_ssid, &wifi_password) {
+        log::debug!("Initial Wi-Fi credentials save skipped: {e}");
+    }
+
+    tokio::task::spawn_local(async move {
+        wifi_reconnect_watchdog(wifi, wifi_ssid, wifi_password).await;
+    });
+
+    let ota_manager = std::sync::Arc::new(ota::OtaManager::new());
+    {
+        let mgr = ota_manager.clone();
+        tokio::task::spawn_local(async move {
+            ota_check_loop(mgr).await;
+        });
+    }
+
+    if let Some(initial_ota) = ota_manager.check_for_update() {
+        info!(
+            "OTA update available: v{} ({} bytes)",
+            initial_ota.version, initial_ota.size
+        );
+    }
 
     corelib::ecs::init_runtime_default_with_stack(ECS_STACK_SIZE);
     gui::slint_ui::set_device_connected(false);
@@ -99,7 +129,6 @@ async fn run_app() -> anyhow::Result<()> {
                     read_device_battery_status(&snapshot.device_id).await
                 {
                     cached_battery_percent = battery_percent.clamp(0, 100);
-                    //cached_charge_text = charge_text;
                 }
                 last_battery_refresh = std::time::Instant::now();
                 current_device_id = snapshot.device_id.clone();
@@ -155,8 +184,8 @@ async fn run_app() -> anyhow::Result<()> {
     )?;
 
     tokio::task::spawn_local(async {
-        if let Err(err) = miwear::connect().await {
-            log::error!("miwear connect failed: {err:?}");
+        if let Err(err) = miwear::connect_with_retry().await {
+            log::error!("miwear connect loop exited: {err:?}");
         }
     });
 
@@ -173,7 +202,6 @@ async fn run_app() -> anyhow::Result<()> {
             if elapsed < frame_interval {
                 tokio::time::sleep(frame_interval - elapsed).await;
             } else {
-                // Keep yielding real CPU time so IDLE0 can run and feed task WDT.
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
         }
@@ -181,6 +209,79 @@ async fn run_app() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+async fn init_wifi_with_retry(
+    modem: Modem,
+    ssid: &str,
+    password: &str,
+) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
+    let sys_loop = EspSystemEventLoop::take()?;
+    let nvs = EspDefaultNvsPartition::take()?;
+
+    let mut wifi = BlockingWifi::wrap(
+        EspWifi::new(modem, sys_loop.clone(), Some(nvs))?,
+        sys_loop,
+    )?;
+
+    let wifi_configuration = Configuration::Client(ClientConfiguration {
+        ssid: ssid
+            .try_into()
+            .map_err(|_| anyhow!("Wi-Fi SSID is too long"))?,
+        password: password
+            .try_into()
+            .map_err(|_| anyhow!("Wi-Fi password is too long"))?,
+        auth_method: AuthMethod::WPA2Personal,
+        ..Default::default()
+    });
+
+    wifi.set_configuration(&wifi_configuration)?;
+    wifi.start()?;
+    log::info!("Wi-Fi started");
+
+    for attempt in 1..=WIFI_INIT_MAX_RETRIES {
+        match wifi.connect() {
+            Ok(()) => match wifi.wait_netif_up() {
+                Ok(()) => {
+                    log::info!("Wi-Fi connected to {ssid}");
+                    return Ok(wifi);
+                }
+                Err(err) => {
+                    log::warn!(
+                        "Wi-Fi netif up failed on attempt {attempt}: {err:?}"
+                    );
+                }
+            },
+            Err(err) => {
+                log::warn!(
+                    "Wi-Fi connect attempt {attempt}/{WIFI_INIT_MAX_RETRIES} failed: {err:?}"
+                );
+            }
+        }
+
+        if attempt < WIFI_INIT_MAX_RETRIES {
+            let delay = WIFI_INIT_RETRY_DELAY.saturating_mul(attempt as u32);
+            log::info!("Retrying Wi-Fi connection in {:?}...", delay);
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Err(anyhow!(
+        "Wi-Fi connection failed after {WIFI_INIT_MAX_RETRIES} attempts"
+    ))
+}
+
+async fn ota_check_loop(manager: std::sync::Arc<ota::OtaManager>) {
+    let mut ticker = tokio::time::interval(OTA_CHECK_INTERVAL);
+    loop {
+        ticker.tick().await;
+        if let Some(info) = manager.check_for_update() {
+            info!(
+                "OTA update available: v{} ({} bytes, {}, url: {})",
+                info.version, info.size, info.release_notes, info.url
+            );
+        }
+    }
 }
 
 fn configure_component_log_levels() {
@@ -312,17 +413,18 @@ fn format_speed_text(speed_bps: f64, arrow: &str) -> String {
     }
 }
 
-fn init_wifi(modem: Modem) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
+#[allow(dead_code)]
+fn init_wifi(modem: Modem, ssid: &str, password: &str) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
     let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs))?, sys_loop)?;
 
     let wifi_configuration = Configuration::Client(ClientConfiguration {
-        ssid: WIFI_SSID
+        ssid: ssid
             .try_into()
             .map_err(|_| anyhow!("Wi-Fi SSID is too long"))?,
-        password: WIFI_PASSWORD
+        password: password
             .try_into()
             .map_err(|_| anyhow!("Wi-Fi password is too long"))?,
         auth_method: AuthMethod::WPA2Personal,
@@ -334,10 +436,48 @@ fn init_wifi(modem: Modem) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
     log::info!("Wi-Fi started");
 
     wifi.connect()?;
-    log::info!("Wi-Fi connected to {}", WIFI_SSID);
+    log::info!("Wi-Fi connected to {}", ssid);
 
     wifi.wait_netif_up()?;
     log::info!("Wi-Fi network interface is up");
 
     Ok(wifi)
+}
+
+async fn wifi_reconnect_watchdog(
+    wifi: BlockingWifi<EspWifi<'static>>,
+    ssid: String,
+    password: String,
+) {
+    let mut ticker = tokio::time::interval(WIFI_RECONNECT_CHECK_INTERVAL);
+    loop {
+        ticker.tick().await;
+
+        if wifi.is_connected() {
+            continue;
+        }
+
+        log::warn!("Wi-Fi disconnected, attempting reconnect...");
+
+        let _ = wifi.disconnect();
+
+        match wifi.connect() {
+            Ok(()) => {
+                match wifi.wait_netif_up() {
+                    Ok(()) => {
+                        log::info!("Wi-Fi reconnected to {}", ssid);
+                        if let Ok(()) = nvs_config::save_wifi_credentials(&ssid, &password) {
+                            log::debug!("Wi-Fi credentials saved to NVS");
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("Wi-Fi netif up failed: {err:?}");
+                    }
+                }
+            }
+            Err(err) => {
+                log::warn!("Wi-Fi reconnect failed: {err:?}");
+            }
+        }
+    }
 }

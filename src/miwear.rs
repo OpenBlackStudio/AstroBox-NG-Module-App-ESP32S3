@@ -25,6 +25,8 @@ pub mod ancs;
 
 const AUTO_LAUNCH_PACKAGE: &str = "com.searchstars.hyperbilibili";
 const AUTO_LAUNCH_DELAY_SECS: u64 = 10;
+const RECONNECT_DELAY_SECS: u64 = 5;
+const SCAN_TIMEOUT_MS: u64 = 10_000;
 
 fn u16_uuid(u: u16) -> BleUuid {
     BleUuid::from(Uuid16(u))
@@ -34,7 +36,44 @@ fn uuid_contains(u: &BleUuid, needle: &str) -> bool {
     s.contains(&needle.to_ascii_lowercase())
 }
 
-pub async fn connect() -> anyhow::Result<()> {
+pub async fn connect_with_retry() -> anyhow::Result<()> {
+    let ble = BLEDevice::take();
+    ancs::init_fake_ancs_service(&mut *ble)?;
+
+    let mut consecutive_failures: u32 = 0;
+
+    loop {
+        let handle = tokio::runtime::Handle::current();
+
+        match connect_once(&ble, handle).await {
+            Ok(()) => {
+                consecutive_failures = 0;
+                log::info!("MiWear session ended normally");
+            }
+            Err(err) => {
+                consecutive_failures += 1;
+                log::warn!(
+                    "MiWear connection failed (attempt {}): {err:?}",
+                    consecutive_failures
+                );
+                crate::gui::slint_ui::set_device_connected(false);
+            }
+        }
+
+        let delay = if consecutive_failures > 0 {
+            let backoff = (RECONNECT_DELAY_SECS as u64)
+                .saturating_mul(1u64 << (consecutive_failures.min(6)));
+            Duration::from_secs(backoff.min(120))
+        } else {
+            Duration::from_secs(RECONNECT_DELAY_SECS)
+        };
+
+        log::info!("Reconnecting in {:?}...", delay);
+        tokio::time::sleep(delay).await;
+    }
+}
+
+async fn connect_once(ble: &BLEDevice, handle: tokio::runtime::Handle) -> anyhow::Result<()> {
     crate::gui::slint_ui::set_device_connected(false);
 
     let mi_service = u16_uuid(0xFE95);
@@ -42,17 +81,13 @@ pub async fn connect() -> anyhow::Result<()> {
     let uuid_recv = u16_uuid(0x005E);
     let uuid_sent = u16_uuid(0x005F);
 
-    let ble = BLEDevice::take();
-    ancs::init_fake_ancs_service(&mut *ble)?;
-    let handle = tokio::runtime::Handle::current();
-
     let mut scan = BLEScan::new();
     scan.active_scan(true).interval(80).window(40);
 
     let wanted_name = "Xiaomi Watch S4";
     info!("Start scanning...");
     let addr = scan
-        .start(&ble, 10_000, |dev, adv| {
+        .start(ble, SCAN_TIMEOUT_MS, |dev, adv| {
             let hit = adv
                 .name()
                 .map(|n| n.to_string().contains(wanted_name))
@@ -199,7 +234,6 @@ pub async fn connect() -> anyhow::Result<()> {
         let notify_handle = handle.clone();
         let notify_addr = device_addr.clone();
         ch_recv.on_notify(move |payload| {
-            //log::info!("Notify(0x005E): {}", corelib::tools::to_hex_string(payload));
             corelib::device::xiaomi::packet::dispatcher::on_packet(
                 notify_handle.clone(),
                 notify_addr.clone(),
@@ -215,14 +249,13 @@ pub async fn connect() -> anyhow::Result<()> {
     device::create_device(
         handle.clone(),
         DeviceKind::Xiaomi,
-        device_name,
+        device_name.clone(),
         device_addr.clone(),
         auth_key,
         sar_version,
         ConnectType::BLE,
         false,
         move |data| {
-            //log::info!("Write(0x005F): {}", corelib::tools::to_hex_string(&data));
             let fut = send_cb(data);
             async move {
                 fut.await.map_err(|err| {
@@ -273,7 +306,6 @@ async fn launch_watch_app(addr: &str, package: &str) -> anyhow::Result<()> {
     let info = app_info.clone();
     corelib::ecs::with_rt_mut(move |rt| {
         rt.with_device_mut(&addr_owned, |world, entity| {
-            // 确保第三方组件存在；新ECS里system与component是并列组件。
             if world.get::<ThirdpartyAppComponent>(entity).is_none() {
                 return Err(anyhow::anyhow!("third-party component missing"));
             }
