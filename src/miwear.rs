@@ -28,12 +28,46 @@ const AUTO_LAUNCH_DELAY_SECS: u64 = 10;
 const RECONNECT_DELAY_SECS: u64 = 5;
 const SCAN_TIMEOUT_MS: u64 = 10_000;
 
+const SUPPORTED_DEVICE_KEYWORDS: &[&str] = &[
+    "Xiaomi Watch S5",
+    "Xiaomi Watch S4",
+    "Xiaomi Watch S3",
+    "Mi Band 10 Pro",
+    "Mi Band 10",
+    "Mi Band 9 Pro",
+    "Mi Band 9",
+    "Redmi Watch 6",
+    "Redmi Watch 5 eSIM",
+    "Redmi Watch 5",
+    "REDMI Watch 6",
+    "REDMI Watch 5 eSIM",
+    "REDMI Watch 5",
+];
+
+const SUPPORTED_GENERIC_KEYWORDS: &[&str] = &[
+    "Xiaomi Watch",
+    "Mi Band",
+    "Redmi Watch",
+    "REDMI Watch",
+    "Band",
+];
+
 fn u16_uuid(u: u16) -> BleUuid {
     BleUuid::from(Uuid16(u))
 }
 fn uuid_contains(u: &BleUuid, needle: &str) -> bool {
     let s = format!("{u:?}").replace('-', "").to_ascii_lowercase();
     s.contains(&needle.to_ascii_lowercase())
+}
+
+fn is_supported_device_name(name: &str) -> bool {
+    let name_lower = name.to_ascii_lowercase();
+    SUPPORTED_DEVICE_KEYWORDS
+        .iter()
+        .any(|kw| name_lower.contains(&kw.to_ascii_lowercase()))
+        || SUPPORTED_GENERIC_KEYWORDS
+            .iter()
+            .any(|kw| name_lower.contains(&kw.to_ascii_lowercase()))
 }
 
 pub async fn connect_with_retry() -> anyhow::Result<()> {
@@ -84,26 +118,32 @@ async fn connect_once(ble: &BLEDevice, handle: tokio::runtime::Handle) -> anyhow
     let mut scan = BLEScan::new();
     scan.active_scan(true).interval(80).window(40);
 
-    let wanted_name = "Xiaomi Watch S4";
-    info!("Start scanning...");
-    let addr = scan
+    info!("Start scanning for supported Xiaomi wearables...");
+    let (addr, detected_name) = scan
         .start(ble, SCAN_TIMEOUT_MS, |dev, adv| {
-            let hit = adv
-                .name()
-                .map(|n| n.to_string().contains(wanted_name))
-                .unwrap_or(false)
-                || adv.service_uuids().any(|u| u == mi_service);
+            let fe95_match = adv.service_uuids().any(|u| u == mi_service);
+            let name = adv.name().map(|n| n.to_string());
+            let name_match = name
+                .as_deref()
+                .map(is_supported_device_name)
+                .unwrap_or(false);
 
-            if hit {
-                info!("Found target: {:?} rssi={}", adv.name(), dev.rssi());
-                Some(dev.addr())
+            if fe95_match || name_match {
+                let display_name = name.clone().unwrap_or_else(|| "<unnamed>".to_string());
+                info!(
+                    "Found target: {display_name} rssi={} fe95={fe95_match} name_match={name_match}",
+                    dev.rssi()
+                );
+                Some((dev.addr(), name))
             } else {
                 None
             }
         })
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Target device not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("No supported Xiaomi device found"))?;
     info!("Target addr = {addr}");
+
+    let device_name = detected_name.unwrap_or_else(|| "Unknown Xiaomi Device".to_string());
 
     let mut client: esp32_nimble::BLEClient = ble.new_client();
     client.set_connection_params(12, 24, 0, 400, 16, 16);
@@ -226,7 +266,6 @@ async fn connect_once(ble: &BLEDevice, handle: tokio::runtime::Handle) -> anyhow
     };
 
     let device_addr = addr.to_string();
-    let device_name = wanted_name.to_string();
     let auth_key = "fd0ce943010e5112c6a35cb3ea61b968".to_string();
     let sar_version = 2;
 
