@@ -142,6 +142,10 @@ async fn run_app() -> anyhow::Result<()> {
                     read_device_battery_status(&snapshot.device_id).await
                 {
                     cached_battery_percent = battery_percent.clamp(0, 100);
+                    // #11: the charge_text tuple member was being discarded
+                    // by the caller, leaving cached_charge_text stuck at its
+                    // initial "2天前充电" value forever.
+                    cached_charge_text = charge_text;
                 }
                 last_battery_refresh = std::time::Instant::now();
                 current_device_id = snapshot.device_id.clone();
@@ -483,72 +487,112 @@ async fn log_device_roster() {
     }
 }
 
-fn init_wifi(modem: Modem, ssid: &str, password: &str) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
-    let sys_loop = EspSystemEventLoop::take()?;
-    let nvs = EspDefaultNvsPartition::take()?;
-
-    let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs))?, sys_loop)?;
-
-    let wifi_configuration = Configuration::Client(ClientConfiguration {
-        ssid: ssid
-            .try_into()
-            .map_err(|_| anyhow!("Wi-Fi SSID is too long"))?,
-        password: password
-            .try_into()
-            .map_err(|_| anyhow!("Wi-Fi password is too long"))?,
-        auth_method: AuthMethod::WPA2Personal,
-        ..Default::default()
-    });
-
-    wifi.set_configuration(&wifi_configuration)?;
-    wifi.start()?;
-    log::info!("Wi-Fi started");
-
-    wifi.connect()?;
-    log::info!("Wi-Fi connected to {}", ssid);
-
-    wifi.wait_netif_up()?;
-    log::info!("Wi-Fi network interface is up");
-
-    Ok(wifi)
-}
-
 async fn wifi_reconnect_watchdog(
     wifi: BlockingWifi<EspWifi<'static>>,
     ssid: String,
     password: String,
 ) {
+    // #17: `BlockingWifi::{connect,wait_netif_up,disconnect}` block the
+    // current thread. The main Tokio runtime is single-threaded
+    // (`new_current_thread`), so running them in a spawn_local task would
+    // freeze the UI, touch handling and BLE event loop for the whole
+    // reconnect window.
+    //
+    // We therefore split the work into two halves:
+    //   1. A dedicated OS std::thread owns the BlockingWifi and runs all
+    //      the blocking operations. It receives "reconnect now" requests
+    //      over a tokio mpsc and replies on a oneshot once the operation is
+    //      done. The thread also polls `is_connected` periodically so a
+    //      transient disconnect triggers a reconnect even when the async
+    //      half is busy.
+    //   2. The async half (this function) only waits on async channels and
+    //      the regular ticker, so it never blocks the single-threaded
+    //      runtime.
+    enum WifiCmd {
+        CheckAndReconnect {
+            reply: oneshot::Sender<()>,
+        },
+    }
+
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<WifiCmd>(4);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
+
+    let _wifi_thread = std::thread::Builder::new()
+        .name("wifi-wd".into())
+        .stack_size(16 * 1024)
+        .spawn(move || {
+            let mut wifi = wifi;
+            let mut last_disconnected_snapshot = false;
+            let poll_interval = std::time::Duration::from_millis(500);
+            loop {
+                if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                // Drain the cmd queue first: the async half asked us to check.
+                while let Ok(cmd) = cmd_rx.try_recv() {
+                    match cmd {
+                        WifiCmd::CheckAndReconnect { reply } => {
+                            let _ = wifi_reconnect_blocking(&mut wifi, &ssid, &password);
+                            let _ = reply.send(());
+                        }
+                    }
+                }
+                // Also run a poll-driven check so we recover even if nobody
+                // is sending explicit commands.
+                let connected = wifi.is_connected();
+                if !connected && !last_disconnected_snapshot {
+                    log::warn!(
+                        "[Wifi-Watchdog] link lost on worker thread; reconnecting..."
+                    );
+                }
+                last_disconnected_snapshot = connected;
+                if !connected {
+                    let _ = wifi_reconnect_blocking(&mut wifi, &ssid, &password);
+                }
+                // Sleep in small chunks so we stay responsive to commands.
+                std::thread::sleep(poll_interval);
+            }
+        })
+        .expect("spawn wifi watchdog worker thread");
+
     let mut ticker = tokio::time::interval(WIFI_RECONNECT_CHECK_INTERVAL);
     loop {
         ticker.tick().await;
-
-        if wifi.is_connected() {
-            continue;
-        }
-
-        log::warn!("Wi-Fi disconnected, attempting reconnect...");
-
-        let _ = wifi.disconnect();
-
-        match wifi.connect() {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        match cmd_tx.send(WifiCmd::CheckAndReconnect { reply: reply_tx }).await {
             Ok(()) => {
-                match wifi.wait_netif_up() {
-                    Ok(()) => {
-                        log::info!("Wi-Fi reconnected to {}", ssid);
-                        if let Ok(()) = nvs_config::save_wifi_credentials(&ssid, &password) {
-                            log::debug!("Wi-Fi credentials saved to NVS");
-                        }
-                    }
-                    Err(err) => {
-                        log::warn!("Wi-Fi netif up failed: {err:?}");
-                    }
-                }
+                // Wait for the worker to finish its blocking reconnect pass;
+                // this is only waiting on a oneshot channel, never blocks the
+                // current thread.
+                let _ = reply_rx.await;
             }
-            Err(err) => {
-                log::warn!("Wi-Fi reconnect failed: {err:?}");
+            Err(_closed) => {
+                log::warn!("[Wifi-Watchdog] worker thread exited; watchdog disabled");
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                return;
             }
         }
     }
+}
+
+fn wifi_reconnect_blocking(
+    wifi: &mut BlockingWifi<EspWifi<'static>>,
+    ssid: &str,
+    password: &str,
+) -> Result<(), anyhow::Error> {
+    if wifi.is_connected() {
+        return Ok(());
+    }
+    let _ = wifi.disconnect();
+    wifi.connect().map_err(|e| anyhow!("connect: {e:?}"))?;
+    wifi.wait_netif_up()
+        .map_err(|e| anyhow!("wait_netif_up: {e:?}"))?;
+    log::info!("Wi-Fi reconnected to {ssid}");
+    if let Ok(()) = nvs_config::save_wifi_credentials(ssid, password) {
+        log::debug!("Wi-Fi credentials saved to NVS");
+    }
+    Ok(())
 }
 
 async fn sync_installed_items() {

@@ -13,11 +13,12 @@ use corelib::device::{
 use esp32_nimble::{utilities::BleUuid, utilities::BleUuid::Uuid16, BLEDevice, BLEScan};
 use log::info;
 use std::{
+    collections::HashSet,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
-    sync::{mpsc, oneshot, Notify},
+    sync::{mpsc, oneshot},
     time,
 };
 
@@ -49,8 +50,10 @@ const SUPPORTED_GENERIC_KEYWORDS: &[&str] = &[
     "Mi Band",
     "Redmi Watch",
     "REDMI Watch",
-    "Band",
 ];
+// Note: the standalone "Band" keyword was deliberately removed to avoid
+// matching non-Xiaomi devices (e.g. BT headsets, arm-band sensors) that
+// happen to contain "Band" in their advertising name (#16).
 
 struct ConnectedDevice {
     addr: String,
@@ -63,8 +66,13 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
 
     let handle = tokio::runtime::Handle::current();
 
-    let shared_disconnect_addr = Arc::new(Mutex::new(None::<String>));
-    let shared_notify = Arc::new(Notify::new());
+    // #14: use an unbounded mpsc channel instead of a single Option + Notify.
+    // This guarantees that disconnect events for multiple devices that arrive
+    // concurrently are queued instead of being overwritten or lost.
+    let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<String>();
+    // Track recently-disconnected addresses within the main loop. The on_disconnect
+    // callback runs in a NimBLE thread, so we deduplicate events there as well.
+    let pending_disconnects: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     let mut sessions: Vec<ConnectedDevice> = Vec::new();
 
@@ -87,7 +95,8 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
             continue;
         }
 
-        log!("Found {} device(s)", found.len());
+        // #10: use info!() instead of bare log!() (which requires a Level parameter).
+        info!("Found {} device(s)", found.len());
 
         for (addr, name) in &found {
             if sessions.iter().any(|s| s.addr == *addr) {
@@ -100,8 +109,8 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
                 addr,
                 name,
                 &handle,
-                &shared_disconnect_addr,
-                &shared_notify,
+                disconnect_tx.clone(),
+                Arc::clone(&pending_disconnects),
             )
             .await
             {
@@ -128,13 +137,24 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
             continue;
         }
 
-        log!("{} device(s) connected, waiting for events...", count);
+        info!("{} device(s) connected, waiting for events...", count);
 
-        shared_notify.notified().await;
+        // Drain any queued disconnect events first before waiting; this also
+        // handles the case where many devices disconnected while we were
+        // still running the scan/connect loop above.
+        let mut maybe_disconnect = disconnect_rx.try_recv().ok();
+        if maybe_disconnect.is_none() {
+            maybe_disconnect = disconnect_rx.recv().await;
+        }
 
-        let disconnected_addr = shared_disconnect_addr.lock().unwrap().take();
+        while let Some(daddr) = maybe_disconnect {
+            // Remove from the pending set as soon as we start processing it,
+            // so that a fresh disconnect during the retry window is not
+            // incorrectly dropped.
+            if let Ok(mut set) = pending_disconnects.lock() {
+                set.remove(&daddr);
+            }
 
-        if let Some(daddr) = disconnected_addr {
             if let Some(pos) = sessions.iter().position(|s| s.addr == daddr) {
                 let session = sessions.remove(pos);
                 let remaining = sessions.len();
@@ -151,15 +171,15 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
 
                 tokio::time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
 
-                log!("Attempting to reconnect to {} ({})", session.name, session.addr);
+                info!("Attempting to reconnect to {} ({})", session.name, session.addr);
 
                 match connect_one_device(
                     &ble,
                     &session.addr,
                     &session.name,
                     &handle,
-                    &shared_disconnect_addr,
-                    &shared_notify,
+                    disconnect_tx.clone(),
+                    Arc::clone(&pending_disconnects),
                 )
                 .await
                 {
@@ -182,6 +202,10 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
                 crate::gui::slint_ui::set_connected_device_count(sessions.len());
                 crate::gui::slint_ui::set_device_connected(!sessions.is_empty());
             }
+
+            // Drain subsequent queued disconnects from the same scan cycle so
+            // we don't rescan just to wait again.
+            maybe_disconnect = disconnect_rx.try_recv().ok();
         }
     }
 }
@@ -193,7 +217,12 @@ async fn scan_all_supported_devices(
     let mut scan = BLEScan::new();
     scan.active_scan(true).interval(80).window(40);
 
-    let results = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // #13: use a HashMap keyed by MAC address inside the scan callback so
+    // repeated advertising packets from the same device don't produce
+    // duplicate entries. The outer Vec stores the deduped result.
+    let results = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::<String, String>::new(),
+    ));
     let results_ref = Arc::clone(&results);
 
     let mut discovered: Vec<(String, String)> = Vec::new();
@@ -222,20 +251,35 @@ async fn scan_all_supported_devices(
                 dev.rssi()
             );
 
-            let mut vec = results_ref.lock().unwrap();
-            vec.push((addr, display_name));
+            let mut map = results_ref.lock().unwrap();
+            // Prefer a named entry over an "Unknown ..." fallback for the
+            // same MAC address, but keep the first insertion otherwise.
+            use std::collections::hash_map::Entry;
+            match map.entry(addr) {
+                Entry::Vacant(v) => {
+                    v.insert(display_name);
+                }
+                Entry::Occupied(mut o) => {
+                    if o.get().starts_with("Unknown") && !display_name.starts_with("Unknown") {
+                        o.insert(display_name);
+                    }
+                }
+            }
         }
         None::<()>
     })
     .await?;
 
-    let mut vec = results.lock().unwrap();
-    std::mem::swap(&mut *vec, &mut discovered);
+    let map = results.lock().unwrap();
+    discovered.extend(map.iter().map(|(a, n)| (a.clone(), n.clone())));
 
     discovered.sort_by(|a, b| {
         let a_priority = if a.1.starts_with("Unknown") { 1 } else { 0 };
         let b_priority = if b.1.starts_with("Unknown") { 1 } else { 0 };
-        a_priority.cmp(&b_priority)
+        a_priority
+            .cmp(&b_priority)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.0.cmp(&b.0))
     });
 
     Ok(discovered)
@@ -246,8 +290,8 @@ async fn connect_one_device(
     addr: &str,
     device_name: &str,
     handle: &tokio::runtime::Handle,
-    shared_disconnect_addr: &Arc<Mutex<Option<String>>>,
-    shared_notify: &Arc<Notify>,
+    disconnect_tx: mpsc::UnboundedSender<String>,
+    pending_disconnects: Arc<Mutex<HashSet<String>>>,
 ) -> anyhow::Result<()> {
     let mi_service = u16_uuid(0xFE95);
     let uuid_service_flag = u16_uuid(0x0050);
@@ -259,20 +303,28 @@ async fn connect_one_device(
 
     let device_addr_owned = addr.to_string();
     client.on_disconnect({
-        let shared_addr = Arc::clone(shared_disconnect_addr);
-        let shared_notify = Arc::clone(shared_notify);
         let disconnect_addr = device_addr_owned.clone();
         let device_name = device_name.to_string();
+        let pending = Arc::clone(&pending_disconnects);
         move |reason| {
             log::warn!(
                 "BLE disconnected from {} (reason: {})",
                 device_name,
                 reason
             );
-            if let Ok(mut slot) = shared_addr.lock() {
-                *slot = Some(disconnect_addr);
+            // #14: de-duplicate disconnect events per MAC before pushing to
+            // the channel; NimBLE can fire multiple on_disconnect callbacks
+            // for a single teardown (e.g. timeout + explicit close).
+            let is_new = {
+                let mut guard = match pending.lock() {
+                    Ok(g) => g,
+                    Err(_poisoned) => pending.into_inner().unwrap(),
+                };
+                guard.insert(disconnect_addr.clone())
+            };
+            if is_new {
+                let _ = disconnect_tx.send(disconnect_addr);
             }
-            shared_notify.notify_waiters();
         }
     });
 
@@ -310,15 +362,21 @@ async fn connect_one_device(
     if ch_service_flag.is_none() || ch_recv.is_none() || ch_sent.is_none() {
         for c in &chars {
             let u = c.uuid();
-            if ch_recv.is_none() && uuid_contains(&u, "005e") {
+            // #20: numeric comparison against the 16-bit UUID short form rather
+            // than formatting the Debug output and doing substring matching.
+            // For 128-bit Xiaomi service-derived UUIDs the "short" value sits
+            // at the position of bytes 12-13 in little-endian order (the same
+            // location as the "xxxx" component of the canonical
+            // 0000xxxx-0000-1000-8000-00805F9B34FB BT SIG layout).
+            if ch_recv.is_none() && uuid_matches_u16(&u, 0x005E) {
                 ch_recv = Some((*c).clone());
                 continue;
             }
-            if ch_sent.is_none() && uuid_contains(&u, "005f") {
+            if ch_sent.is_none() && uuid_matches_u16(&u, 0x005F) {
                 ch_sent = Some((*c).clone());
                 continue;
             }
-            if ch_service_flag.is_none() && uuid_contains(&u, "0050") {
+            if ch_service_flag.is_none() && uuid_matches_u16(&u, 0x0050) {
                 ch_service_flag = Some((*c).clone());
                 continue;
             }
@@ -462,7 +520,38 @@ fn u16_uuid(u: u16) -> BleUuid {
     BleUuid::from(Uuid16(u))
 }
 
+/// #20: Compare a [`BleUuid`] against a 16-bit short UUID numerically.
+///
+/// For 128-bit UUIDs the "short" form is taken from the same bytes used by
+/// the Bluetooth Base UUID layout, i.e. bytes 12..14 interpreted as a
+/// little-endian u16. This matches `0000xxxx-0000-1000-8000-00805F9B34FB`.
+fn uuid_matches_u16(u: &BleUuid, target: u16) -> bool {
+    match u {
+        BleUuid::Uuid16(v) => *v == target,
+        BleUuid::Uuid32(v) => (*v & 0xFFFF) as u16 == target,
+        BleUuid::Uuid128(bytes) => {
+            // Standard Bluetooth UUID layout: bytes 12..14 hold the 16-bit
+            // short uuid in little-endian order.
+            if bytes.len() >= 14 {
+                u16::from_le_bytes([bytes[12], bytes[13]]) == target
+            } else {
+                false
+            }
+        }
+        // For any future BleUuid variant, fall back to the formatted Debug
+        // string so we don't silently fail to match after a dependency bump.
+        _other => {
+            let s = format!("{_other:?}").replace('-', "").to_ascii_lowercase();
+            let target_hex = format!("{target:04x}");
+            s.contains(&target_hex)
+        }
+    }
+}
+
+#[allow(dead_code)]
 fn uuid_contains(u: &BleUuid, needle: &str) -> bool {
+    // Legacy string-based matcher retained only as a reference / debugging
+    // aid. New code should call `uuid_matches_u16` instead.
     let s = format!("{u:?}").replace('-', "").to_ascii_lowercase();
     s.contains(&needle.to_ascii_lowercase())
 }

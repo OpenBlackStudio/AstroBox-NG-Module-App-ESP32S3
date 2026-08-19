@@ -10,16 +10,22 @@ use corelib::{
     },
     ecs,
 };
-use log::{error, info, warn};
+use log::info;
 use std::path::Path;
 use tokio::fs;
 
-pub(crate) async fn with_device_async<F, T>(
-    addr: &str,
-    f: F,
-) -> anyhow::Result<T>
+/// #19: Generic helper that encapsulates the recurring
+/// `ecs::with_rt_mut + oneshot + rt.with_device_mut` access pattern.
+///
+/// Every `install_* / uninstall_* / list_*` function in this module used to
+/// inline ~15 lines of identical `ecs::with_rt_mut(...) + oneshot + rx.await`
+/// boilerplate; routing them through `with_device_async` drops the
+/// duplication and centralises error surface.
+pub(crate) async fn with_device_async<F, T>(addr: &str, f: F) -> anyhow::Result<T>
 where
-    F: FnOnce(&mut corelib::ecs::World, corelib::ecs::Entity) -> anyhow::Result<T> + Send + 'static,
+    F: FnOnce(&mut corelib::ecs::World, corelib::ecs::Entity) -> anyhow::Result<T>
+        + Send
+        + 'static,
     T: Send + 'static,
 {
     let addr_owned = addr.to_string();
@@ -37,85 +43,44 @@ where
 }
 
 pub(crate) async fn resolve_app_info(addr: &str, package_name: &str) -> anyhow::Result<AppInfo> {
-    let addr_owned = addr.to_string();
     let pkg_owned = package_name.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            let component = match world.get::<ResourceComponent>(entity) {
-                Some(c) => c,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ResourceComponent missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            let info = component
-                .quick_apps
-                .iter()
-                .find(|item| item.package_name == pkg_owned)
-                .map(|item| AppInfo {
-                    package_name: item.package_name.clone(),
-                    fingerprint: item.fingerprint.clone(),
-                });
-            match info {
-                Some(i) => {
-                    let _ = tx.send(Ok(i));
-                }
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "App {} not found on device {}",
-                        pkg_owned, addr_owned
-                    )));
-                }
-            }
-        });
+    with_device_async(addr, move |world, entity| {
+        let component = world
+            .get::<ResourceComponent>(entity)
+            .ok_or_else(|| anyhow::anyhow!("ResourceComponent missing on device"))?;
+        component
+            .quick_apps
+            .iter()
+            .find(|item| item.package_name == pkg_owned)
+            .map(|item| AppInfo {
+                package_name: item.package_name.clone(),
+                fingerprint: item.fingerprint.clone(),
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "App {} not found in installed list",
+                    pkg_owned
+                )
+            })
     })
-    .await;
-
-    rx.await??
+    .await
 }
 
 pub async fn list_installed_watchfaces(addr: &str) -> anyhow::Result<Vec<String>> {
-    let addr = addr.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr, |world, entity| {
-            if world.get::<WatchfaceComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "WatchfaceComponent missing on device {}",
-                    addr
-                )));
-                return;
-            }
-            if world.get::<ResourceComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "ResourceComponent missing on device {}",
-                    addr
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<ResourceSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ResourceSystem missing on device {}",
-                        addr
-                    )));
-                    return;
-                }
-            };
-            let receiver = system.request_watchface_list();
-            let _ = tx.send(Ok(receiver));
-        });
+    let receiver = with_device_async(addr, |world, entity| {
+        if world.get::<WatchfaceComponent>(entity).is_none() {
+            anyhow::bail!("WatchfaceComponent missing");
+        }
+        if world.get::<ResourceComponent>(entity).is_none() {
+            anyhow::bail!("ResourceComponent missing");
+        }
+        let mut system = world
+            .get_mut::<ResourceSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("ResourceSystem missing"))?;
+        Ok(system.request_watchface_list())
     })
-    .await;
+    .await?;
 
-    let receiver = rx.await??;
     let watchfaces = receiver.await??;
     let names: Vec<String> = watchfaces
         .iter()
@@ -126,35 +91,17 @@ pub async fn list_installed_watchfaces(addr: &str) -> anyhow::Result<Vec<String>
 }
 
 pub async fn list_installed_quick_apps(addr: &str) -> anyhow::Result<Vec<String>> {
-    let addr = addr.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr, |world, entity| {
-            if world.get::<ResourceComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "ResourceComponent missing on device {}",
-                    addr
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<ResourceSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ResourceSystem missing on device {}",
-                        addr
-                    )));
-                    return;
-                }
-            };
-            let receiver = system.request_quick_app_list();
-            let _ = tx.send(Ok(receiver));
-        });
+    let receiver = with_device_async(addr, |world, entity| {
+        if world.get::<ResourceComponent>(entity).is_none() {
+            anyhow::bail!("ResourceComponent missing");
+        }
+        let mut system = world
+            .get_mut::<ResourceSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("ResourceSystem missing"))?;
+        Ok(system.request_quick_app_list())
     })
-    .await;
+    .await?;
 
-    let receiver = rx.await??;
     let apps = receiver.await??;
     let names: Vec<String> = apps
         .iter()
@@ -176,49 +123,20 @@ pub async fn install_quick_app(
         addr
     );
 
-    let addr_owned = addr.to_string();
     let pkg_owned = package_name.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            if world.get::<InstallComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "InstallComponent missing on device {}",
-                    addr_owned
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<InstallSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "InstallSystem missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            let result = system.send_install_request(
-                MassDataType::ThirdPartyApp,
-                app_data,
-                Some(&pkg_owned),
-            );
-            match result {
-                Ok(future) => {
-                    let _ = tx.send(Ok(future));
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "Failed to create install request: {e}"
-                    )));
-                }
-            }
-        });
+    let future = with_device_async(addr, move |world, entity| {
+        if world.get::<InstallComponent>(entity).is_none() {
+            anyhow::bail!("InstallComponent missing");
+        }
+        let mut system = world
+            .get_mut::<InstallSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("InstallSystem missing"))?;
+        system
+            .send_install_request(MassDataType::ThirdPartyApp, app_data, Some(&pkg_owned))
+            .map_err(|e| anyhow::anyhow!("Failed to create install request: {e}"))
     })
-    .await;
+    .await?;
 
-    let future = rx.await??;
     future.await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     info!("Quick app {} installed successfully on {}", package_name, addr);
@@ -241,48 +159,19 @@ pub async fn install_watchface(addr: &str, face_data: Vec<u8>) -> anyhow::Result
         addr
     );
 
-    let addr_owned = addr.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            if world.get::<InstallComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "InstallComponent missing on device {}",
-                    addr_owned
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<InstallSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "InstallSystem missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            let result = system.send_install_request(
-                MassDataType::Watchface,
-                face_data,
-                None,
-            );
-            match result {
-                Ok(future) => {
-                    let _ = tx.send(Ok(future));
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "Failed to create install request: {e}"
-                    )));
-                }
-            }
-        });
+    let future = with_device_async(addr, move |world, entity| {
+        if world.get::<InstallComponent>(entity).is_none() {
+            anyhow::bail!("InstallComponent missing");
+        }
+        let mut system = world
+            .get_mut::<InstallSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("InstallSystem missing"))?;
+        system
+            .send_install_request(MassDataType::Watchface, face_data, None)
+            .map_err(|e| anyhow::anyhow!("Failed to create install request: {e}"))
     })
-    .await;
+    .await?;
 
-    let future = rx.await??;
     future.await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     info!("Watchface installed successfully on {}", addr);
@@ -300,116 +189,59 @@ pub async fn install_watchface_from_file(
 pub async fn uninstall_quick_app(addr: &str, package_name: &str) -> anyhow::Result<()> {
     info!("Uninstalling quick app {} from {}...", package_name, addr);
 
-    let addr_owned = addr.to_string();
     let pkg_owned = package_name.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            if world.get::<ThirdpartyAppComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "ThirdpartyAppComponent missing on device {}",
-                    addr_owned
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<ThirdpartyAppSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ThirdpartyAppSystem missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            let app_info = AppInfo {
-                package_name: pkg_owned.clone(),
-                fingerprint: vec![],
-            };
-            system.uninstall_app(&app_info);
-            info!("Uninstall request sent for {}", pkg_owned);
-            let _ = tx.send(Ok(()));
-        });
+    with_device_async(addr, move |world, entity| {
+        if world.get::<ThirdpartyAppComponent>(entity).is_none() {
+            anyhow::bail!("ThirdpartyAppComponent missing");
+        }
+        let mut system = world
+            .get_mut::<ThirdpartyAppSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("ThirdpartyAppSystem missing"))?;
+        let app_info = AppInfo {
+            package_name: pkg_owned.clone(),
+            fingerprint: vec![],
+        };
+        system.uninstall_app(&app_info);
+        info!("Uninstall request sent for {}", pkg_owned);
+        Ok(())
     })
-    .await;
-
-    rx.await??;
-    Ok(())
+    .await
 }
 
 pub async fn uninstall_watchface(addr: &str, watchface_id: &str) -> anyhow::Result<()> {
     info!("Uninstalling watchface {} from {}...", watchface_id, addr);
 
-    let addr_owned = addr.to_string();
     let id_owned = watchface_id.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            if world.get::<WatchfaceComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "WatchfaceComponent missing on device {}",
-                    addr_owned
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<WatchfaceSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "WatchfaceSystem missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            system.uninstall_watchface(&id_owned);
-            info!("Uninstall watchface request sent for {}", id_owned);
-            let _ = tx.send(Ok(()));
-        });
+    with_device_async(addr, move |world, entity| {
+        if world.get::<WatchfaceComponent>(entity).is_none() {
+            anyhow::bail!("WatchfaceComponent missing");
+        }
+        let mut system = world
+            .get_mut::<WatchfaceSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("WatchfaceSystem missing"))?;
+        system.uninstall_watchface(&id_owned);
+        info!("Uninstall watchface request sent for {}", id_owned);
+        Ok(())
     })
-    .await;
-
-    rx.await??;
-    Ok(())
+    .await
 }
 
 pub async fn set_watchface(addr: &str, watchface_id: &str) -> anyhow::Result<()> {
     info!("Setting watchface {} on {}...", watchface_id, addr);
 
-    let addr_owned = addr.to_string();
     let id_owned = watchface_id.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            if world.get::<WatchfaceComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "WatchfaceComponent missing on device {}",
-                    addr_owned
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<WatchfaceSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "WatchfaceSystem missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            system.set_watchface(&id_owned);
-            info!("Set watchface request sent for {}", id_owned);
-            let _ = tx.send(Ok(()));
-        });
+    with_device_async(addr, move |world, entity| {
+        if world.get::<WatchfaceComponent>(entity).is_none() {
+            anyhow::bail!("WatchfaceComponent missing");
+        }
+        let mut system = world
+            .get_mut::<WatchfaceSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("WatchfaceSystem missing"))?;
+        system.set_watchface(&id_owned);
+        info!("Set watchface request sent for {}", id_owned);
+        Ok(())
     })
-    .await;
-
-    rx.await??;
-    Ok(())
+    .await
 }
 
 pub async fn launch_quick_app(addr: &str, package_name: &str) -> anyhow::Result<()> {
@@ -417,37 +249,18 @@ pub async fn launch_quick_app(addr: &str, package_name: &str) -> anyhow::Result<
 
     let app_info = resolve_app_info(addr, package_name).await?;
 
-    let addr_owned = addr.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            if world.get::<ThirdpartyAppComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "ThirdpartyAppComponent missing on device {}",
-                    addr_owned
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<ThirdpartyAppSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ThirdpartyAppSystem missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            system.launch_app(&app_info, "");
-            info!("Launch request sent for {}", package_name);
-            let _ = tx.send(Ok(()));
-        });
+    with_device_async(addr, move |world, entity| {
+        if world.get::<ThirdpartyAppComponent>(entity).is_none() {
+            anyhow::bail!("ThirdpartyAppComponent missing");
+        }
+        let mut system = world
+            .get_mut::<ThirdpartyAppSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("ThirdpartyAppSystem missing"))?;
+        system.launch_app(&app_info, "");
+        info!("Launch request sent for {}", package_name);
+        Ok(())
     })
-    .await;
-
-    rx.await??;
-    Ok(())
+    .await
 }
 
 pub async fn send_phone_message(
@@ -456,41 +269,24 @@ pub async fn send_phone_message(
     payload: Vec<u8>,
 ) -> anyhow::Result<()> {
     info!(
-        "Sending phone message to app {} on {}...",
-        package_name, addr
+        "Sending phone message to app {} on {} ({} bytes)...",
+        package_name,
+        addr,
+        payload.len()
     );
 
     let app_info = resolve_app_info(addr, package_name).await?;
 
-    let addr_owned = addr.to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    ecs::with_rt_mut(move |rt| {
-        rt.with_device_mut(&addr_owned, |world, entity| {
-            if world.get::<ThirdpartyAppComponent>(entity).is_none() {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "ThirdpartyAppComponent missing on device {}",
-                    addr_owned
-                )));
-                return;
-            }
-            let mut system = match world.get_mut::<ThirdpartyAppSystem>(entity) {
-                Some(s) => s,
-                None => {
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "ThirdpartyAppSystem missing on device {}",
-                        addr_owned
-                    )));
-                    return;
-                }
-            };
-            system.send_phone_message(&app_info, payload);
-            info!("Phone message sent to app {}", package_name);
-            let _ = tx.send(Ok(()));
-        });
+    with_device_async(addr, move |world, entity| {
+        if world.get::<ThirdpartyAppComponent>(entity).is_none() {
+            anyhow::bail!("ThirdpartyAppComponent missing");
+        }
+        let mut system = world
+            .get_mut::<ThirdpartyAppSystem>(entity)
+            .ok_or_else(|| anyhow::anyhow!("ThirdpartyAppSystem missing"))?;
+        system.send_phone_message(&app_info, payload);
+        info!("Phone message sent to app {}", package_name);
+        Ok(())
     })
-    .await;
-
-    rx.await??;
-    Ok(())
+    .await
 }

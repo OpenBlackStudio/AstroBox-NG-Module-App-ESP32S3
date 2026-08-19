@@ -4,6 +4,7 @@ use corelib::{
             mass::{
                 MassComponent, MassSystem, SendMassCallbackData,
             },
+            resource::ResourceComponent,
             thirdparty_app::{AppInfo, ThirdpartyAppComponent, ThirdpartyAppSystem},
         },
         packet::mass::MassDataType,
@@ -11,7 +12,10 @@ use corelib::{
     ecs, events,
 };
 use log::{error, info, warn};
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Debug)]
@@ -129,6 +133,14 @@ pub async fn forward_app_message(
     package_name: &str,
     payload: Vec<u8>,
 ) -> anyhow::Result<()> {
+    if src_addr == dst_addr {
+        // #12 extra safety net: even callers who bypass relay_interconnect_message
+        // shouldn't be able to self-forward and accidentally create a loop.
+        return Err(anyhow::anyhow!(
+            "[Transfer] forward_app_message: src and dst must differ (got {src_addr})"
+        ));
+    }
+
     info!(
         "[Transfer] Forwarding {} bytes from {} → {} (app: {})",
         payload.len(),
@@ -179,6 +191,14 @@ pub async fn relay_interconnect_message(
     src_addr: &str,
     dst_addr: &str,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    // #12: refuse identical endpoints — the relay task would emit a
+    // CoreEvent::InterconnectMessage on the same device that it subscribes
+    // to, creating a tight message loop until the heap fills.
+    if src_addr == dst_addr {
+        return Err(anyhow::anyhow!(
+            "[Transfer] relay_interconnect_message: source and destination cannot be the same device ({src_addr})"
+        ));
+    }
     let src = src_addr.to_string();
     let dst = dst_addr.to_string();
 
@@ -189,11 +209,39 @@ pub async fn relay_interconnect_message(
 
     let mut subscriber = events::subscribe();
 
+    // #12: track per-message (src pkg_name payload_hash) so a second relay
+    // task that bridges dst back to src cannot echo the same payload again
+    // within a bounded window. This defeats the "A↔B pingpong" loop even
+    // when both endpoints spawn mutual relays.
+    let recently_relayed: Arc<Mutex<HashSet<(String, String, u64)>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let recently_relayed_drain = Arc::clone(&recently_relayed);
+    // Periodically drain the dedupe window so memory use stays bounded.
+    tokio::task::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            match recently_relayed_drain.lock() {
+                Ok(mut set) if set.len() > 1024 => set.clear(),
+                Ok(_) => {}
+                Err(_p) => { /* mutex poisoned, we'll leak but keep running */ }
+            }
+        }
+    });
+
     let handle = tokio::task::spawn(async move {
         while let Ok(event) = subscriber.recv().await {
             match event {
                 events::CoreEvent::InterconnectMessage(msg) => {
                     if msg.device_addr == src {
+                        let payload_hash = fnv_1a_64(&msg.payload);
+                        let key = (msg.pkg_name.clone(), src.clone(), payload_hash);
+                        let should_skip = match recently_relayed.lock() {
+                            Ok(mut set) => !set.insert(key),
+                            Err(_) => false,
+                        };
+                        if should_skip {
+                            continue;
+                        }
                         info!(
                             "[Transfer] Relaying message from {} (app: {}, {} bytes) → {}",
                             src,
@@ -226,22 +274,39 @@ pub async fn relay_interconnect_message(
     Ok(handle)
 }
 
+fn fnv_1a_64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h = FNV_OFFSET;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
 pub async fn transfer_quick_app_between_devices(
     src_addr: &str,
     dst_addr: &str,
     package_name: &str,
 ) -> anyhow::Result<()> {
+    if src_addr == dst_addr {
+        return Err(anyhow::anyhow!(
+            "[Transfer] transfer_quick_app: source and destination must differ ({src_addr})"
+        ));
+    }
     info!(
         "[Transfer] Copying quick app {} from {} → {}",
         package_name, src_addr, dst_addr
     );
 
     let src_owned = src_addr.to_string();
+    let pkg_owned = package_name.to_string();
     let (list_tx, list_rx) = oneshot::channel();
 
     ecs::with_rt_mut(move |rt| {
         rt.with_device_mut(&src_owned, |world, entity| {
-            let component = match world.get::<corelib::device::xiaomi::components::resource::ResourceComponent>(entity) {
+            let component = match world.get::<ResourceComponent>(entity) {
                 Some(c) => c,
                 None => {
                     let _ = list_tx.send(Err(anyhow::anyhow!(
@@ -254,7 +319,7 @@ pub async fn transfer_quick_app_between_devices(
             let app_data = component
                 .quick_apps
                 .iter()
-                .find(|item| item.package_name == package_name)
+                .find(|item| item.package_name == pkg_owned)
                 .cloned();
             match app_data {
                 Some(app) => {
@@ -263,7 +328,7 @@ pub async fn transfer_quick_app_between_devices(
                 None => {
                     let _ = list_tx.send(Err(anyhow::anyhow!(
                         "App {} not found on source {}",
-                        package_name, src_owned
+                        pkg_owned, src_owned
                     )));
                 }
             }
@@ -273,15 +338,25 @@ pub async fn transfer_quick_app_between_devices(
 
     let app_item = list_rx.await??;
 
+    // #15: previously we logged `app_item.package_name.len()` here, which
+    // printed the *package name string length* instead of the actual binary
+    // app payload size. For example a 500KB .pk package would look like
+    // "30 bytes" in the log. Use the `data` field, unwrapped safely.
+    let payload_size = app_item.data.as_ref().map(|d| d.len()).unwrap_or(0);
     info!(
         "[Transfer] Found app {} ({} bytes) on {}, now installing on {}",
         package_name,
-        app_item.package_name.len(),
+        payload_size,
         src_addr,
         dst_addr
     );
 
-    crate::install::install_quick_app(dst_addr, &app_item.package_name, app_item.data.unwrap_or_default()).await?;
+    crate::install::install_quick_app(
+        dst_addr,
+        &app_item.package_name,
+        app_item.data.unwrap_or_default(),
+    )
+    .await?;
 
     info!(
         "[Transfer] Quick app {} successfully transferred {} → {}",
