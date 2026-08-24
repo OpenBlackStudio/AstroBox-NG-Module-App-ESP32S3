@@ -43,13 +43,16 @@ jobs:
 
       - name: Setup esp toolchain
         run: |
+          # Temporarily move rust-toolchain.toml to avoid resolution issues
+          mv rust-toolchain.toml rust-toolchain.toml.bak
           # Install espup and ESP-IDF for esp32s3
           cargo install espup
           espup install --targets esp32s3
-          
           # Ensure required tools are available
           which espflash || cargo install espflash
           which ldproxy || cargo install ldproxy
+          # Restore toolchain file
+          mv rust-toolchain.toml.bak rust-toolchain.toml
 
       - name: Cache
         uses: actions/cache@v4
