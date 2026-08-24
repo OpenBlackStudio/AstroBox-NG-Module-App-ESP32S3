@@ -3,5 +3,3 @@ channel = "stable"
 profile = "minimal"
 components = ["rust-src"]
 targets = ["xtensa-esp32s3-espidf"]
-EOF && cat rust-toolchain.toml
-__tr_native_ec=$?; pwd -P >| '/var/log/tool/jobs/job-711864e36161404582acf7dd712e0929/cwd.txt'; exit "$__tr_native_ec"
