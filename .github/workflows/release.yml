@@ -45,8 +45,7 @@ jobs:
         run: |
           # Install espup and ESP-IDF for esp32s3
           cargo install espup
-          espup install esp32s3
-          espup toolchain install esp32s3
+          espup install --targets esp32s3
           
           # Ensure required tools are available
           which espflash || cargo install espflash

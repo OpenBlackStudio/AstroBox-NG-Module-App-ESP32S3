@@ -1,5 +1,4 @@
 [toolchain]
-channel = "stable"
+channel = "esp"
 profile = "minimal"
 components = ["rust-src"]
-targets = ["xtensa-esp32s3-espidf"]

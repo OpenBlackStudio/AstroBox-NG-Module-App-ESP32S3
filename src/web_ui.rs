@@ -211,8 +211,8 @@ pub enum PluginCmd {
 /// 启动 HTTP server（端口 80）。返回后 server 在 ESP-IDF 的内部 httpd task
 /// 里长期运行；`WebServer` drop 会 `httpd_stop` 并释放。
 pub fn start(ctx: Context) -> Result<WebServer> {
-    use esp_idf_svc::http::server::{Configuration, EspHttpServer, Method};
     use embedded_svc::http::server::ResponseWrite;
+    use esp_idf_svc::http::server::{Configuration, EspHttpServer, Method};
 
     let mut conf = Configuration::default();
     // 合理值：最多 6 并发浏览器，桌面端 Chrome 有时一开 6 TCP 连接
@@ -229,14 +229,30 @@ pub fn start(ctx: Context) -> Result<WebServer> {
     // ============ 静态资源 ============
     srv.fn_handler("/", Method::Get, |req| {
         let len = FRONTEND_HTML.len();
-        let mut resp = req.into_response(200, None, &[("Content-Type", FRONTEND_CTYPE), ("Content-Length", &len.to_string())])?;
+        let mut resp = req.into_response(
+            200,
+            None,
+            &[
+                ("Content-Type", FRONTEND_CTYPE),
+                ("Content-Length", &len.to_string()),
+            ],
+        )?;
         resp.write_all(FRONTEND_HTML)
-    }).map_err(|e| anyhow!("register /: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /: {e:?}"))?;
     srv.fn_handler("/index.html", Method::Get, |req| {
         let len = FRONTEND_HTML.len();
-        let mut resp = req.into_response(200, None, &[("Content-Type", FRONTEND_CTYPE), ("Content-Length", &len.to_string())])?;
+        let mut resp = req.into_response(
+            200,
+            None,
+            &[
+                ("Content-Type", FRONTEND_CTYPE),
+                ("Content-Length", &len.to_string()),
+            ],
+        )?;
         resp.write_all(FRONTEND_HTML)
-    }).map_err(|e| anyhow!("register /index.html: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /index.html: {e:?}"))?;
 
     // ============ /api/* ：一条 handler 内部分发，避免 fn_handler 过多 ============
     // main.rs 传入 Context 的 &'static ref 通过 leak_box：EspHttpServer 在独立
@@ -250,16 +266,33 @@ pub fn start(ctx: Context) -> Result<WebServer> {
             note: Some("AstroBox-NG Web 控制台".to_string()),
             fw_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             build_time: Some(env!("BUILD_TIME").unwrap_or("unknown").to_string()),
-        }).unwrap_or_default();
-        let mut resp = req.into_response(200, None, &[("Content-Type", "application/json"), ("Content-Length", &body.len().to_string())])?;
+        })
+        .unwrap_or_default();
+        let mut resp = req.into_response(
+            200,
+            None,
+            &[
+                ("Content-Type", "application/json"),
+                ("Content-Length", &body.len().to_string()),
+            ],
+        )?;
         resp.write_all(&body)
-    }).map_err(|e| anyhow!("register /api/ping: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/ping: {e:?}"))?;
 
     // GET /api/status
     srv.fn_handler::<Method, _>("/api/status", Method::Get, move |req| {
         // 读取 ctx 各字段快照
-        let (wifi_conn, ip) = ctx.wifi_info.lock().map(|g| (g.0, g.1.clone())).unwrap_or_default();
-        let ble_n = ctx.ble_devices.lock().map(|g| g.iter().filter(|d| d.connected).count()).unwrap_or(0);
+        let (wifi_conn, ip) = ctx
+            .wifi_info
+            .lock()
+            .map(|g| (g.0, g.1.clone()))
+            .unwrap_or_default();
+        let ble_n = ctx
+            .ble_devices
+            .lock()
+            .map(|g| g.iter().filter(|d| d.connected).count())
+            .unwrap_or(0);
         let (sd_mounted, total, free) = match &ctx.sd_root {
             Some(r) => {
                 // std::fs 下 esp-idf fatfs 的 statvfs 通过 sys::statvfs
@@ -272,20 +305,31 @@ pub fn start(ctx: Context) -> Result<WebServer> {
                     let s = unsafe { st.assume_init() };
                     let blk = s.f_frsize as u64;
                     (true, s.f_blocks as u64 * blk, s.f_bfree as u64 * blk)
-                } else { (true, 0, 0) }
-            },
+                } else {
+                    (true, 0, 0)
+                }
+            }
             None => (false, 0, 0),
         };
         let updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let body = serde_json::to_vec(&StatusResponse{
-            updated_at, wifi_connected: wifi_conn, ip, ble_connected_count: ble_n,
-            sd_mounted, sd_total_bytes: total, sd_free_bytes: free,
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let body = serde_json::to_vec(&StatusResponse {
+            updated_at,
+            wifi_connected: wifi_conn,
+            ip,
+            ble_connected_count: ble_n,
+            sd_mounted,
+            sd_total_bytes: total,
+            sd_free_bytes: free,
             fw_version: env!("CARGO_PKG_VERSION").to_string(),
             build_time: env!("BUILD_TIME").unwrap_or("unknown").to_string(),
-        }).unwrap_or_default();
+        })
+        .unwrap_or_default();
         send_json(req, 200, &body)
-    }).map_err(|e| anyhow!("register /api/status: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/status: {e:?}"))?;
 
     // GET /api/resources
     srv.fn_handler::<Method, _>("/api/resources", Method::Get, move |req| {
@@ -293,28 +337,39 @@ pub fn start(ctx: Context) -> Result<WebServer> {
         // HTTPd task 直接从 BLE 设备 devices 列表取第一个已连接 model code 做过滤，
         // 不抓网络（网络 repo 抓取需独立任务）。
         let items = Vec::<ResourceItemView>::new();
-        let body = serde_json::to_vec(&ResourcesResponse{items}).unwrap_or_default();
+        let body = serde_json::to_vec(&ResourcesResponse { items }).unwrap_or_default();
         send_json(req, 200, &body)
-    }).map_err(|e| anyhow!("register /api/resources: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/resources: {e:?}"))?;
 
     // GET /api/devices
     srv.fn_handler::<Method, _>("/api/devices", Method::Get, move |req| {
-        let devs = ctx.ble_devices.lock().map(|g| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default();
-        let body = serde_json::to_vec(&DevicesResponse{devices: devs}).unwrap_or_default();
+        let devs = ctx
+            .ble_devices
+            .lock()
+            .map(|g| g.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let body = serde_json::to_vec(&DevicesResponse { devices: devs }).unwrap_or_default();
         send_json(req, 200, &body)
-    }).map_err(|e| anyhow!("register /api/devices: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/devices: {e:?}"))?;
 
     // GET /api/device/list_qas?addr=… / list_wfs
     srv.fn_handler::<Method, _>("/api/device/list_qas", Method::Get, move |req| {
         let _ = req;
-        let body = serde_json::to_vec(&ListResponse{items: vec!["(在 main.rs 的 install_tx/list_tx 通道启用后返回真实结果)".to_string()]}).unwrap_or_default();
+        let body = serde_json::to_vec(&ListResponse {
+            items: vec!["(在 main.rs 的 install_tx/list_tx 通道启用后返回真实结果)".to_string()],
+        })
+        .unwrap_or_default();
         send_json(req, 200, &body)
-    }).map_err(|e| anyhow!("register /api/device/list_qas: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/device/list_qas: {e:?}"))?;
     srv.fn_handler::<Method, _>("/api/device/list_wfs", Method::Get, move |req| {
         let _ = req;
-        let body = serde_json::to_vec(&ListResponse{items: Vec::new()}).unwrap_or_default();
+        let body = serde_json::to_vec(&ListResponse { items: Vec::new() }).unwrap_or_default();
         send_json(req, 200, &body)
-    }).map_err(|e| anyhow!("register /api/device/list_wfs: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/device/list_wfs: {e:?}"))?;
 
     // POST /api/install → 202，work 丢给 LocalSet install_tx
     srv.fn_handler::<Method, _>("/api/install", Method::Post, move |mut req| {
@@ -326,26 +381,39 @@ pub fn start(ctx: Context) -> Result<WebServer> {
                 Ok(n) => n,
                 Err(_) => break,
             };
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             body_vec.extend_from_slice(&buf[..n]);
-            if body_vec.len() > 16384 { break; }
+            if body_vec.len() > 16384 {
+                break;
+            }
         }
         let (status, bytes) = match serde_json::from_slice::<InstallRequest>(&body_vec) {
             Ok(ir) => {
                 if let Ok(tx) = ctx.install_tx.lock().map(|mut g| g.clone()) {
                     if let Some(tx) = tx {
                         let _ = tx.send(ir);
-                        let body = serde_json::to_vec(&OkResponse{ok:true,note:Some("安装请求已入队".into()),fw_version:None,build_time:None}).unwrap_or_default();
+                        let body = serde_json::to_vec(&OkResponse {
+                            ok: true,
+                            note: Some("安装请求已入队".into()),
+                            fw_version: None,
+                            build_time: None,
+                        })
+                        .unwrap_or_default();
                         (202, body)
                     } else {
                         (503, json_err("安装通道未初始化"))
                     }
-                } else { (500, json_err("获取 install_tx 失败")) }
-            },
+                } else {
+                    (500, json_err("获取 install_tx 失败"))
+                }
+            }
             Err(e) => (400, json_err(&format!("bad json: {e}"))),
         };
         send_json(req, status, &bytes)
-    }).map_err(|e| anyhow!("register /api/install: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/install: {e:?}"))?;
 
     // POST /api/upload → 读取 multipart body ≤ 16 MB，写入 UploadMsg
     srv.fn_handler::<Method, _>("/api/upload", Method::Post, move |mut req| {
@@ -355,7 +423,13 @@ pub fn start(ctx: Context) -> Result<WebServer> {
         // 我们只从 body 中找第一个 file + 其对应的 form 字段 restype / devices。
         // 解析策略：按 boundary 拆 → 每段抓 headers + body → 识别 name="file"。
         let ct = header(&req, "content-type").unwrap_or_default();
-        let boundary = ct.split("boundary=").nth(1).unwrap_or("").trim().trim_matches('"').to_string();
+        let boundary = ct
+            .split("boundary=")
+            .nth(1)
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .to_string();
         if boundary.is_empty() {
             return send_json(req, 400, &json_err("multipart/form-data: boundary missing"));
         }
@@ -367,17 +441,23 @@ pub fn start(ctx: Context) -> Result<WebServer> {
         let mut buf = [0u8; 4096];
         loop {
             use embedded_svc::io::Read;
-            let n = match req.read(&mut buf) { Ok(n)=>n, Err(_)=>break };
-            if n == 0 { break; }
+            let n = match req.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            if n == 0 {
+                break;
+            }
             if body_vec.len() + n > cap {
                 return send_json(req, 413, &json_err("payload too large (> 16 MB)"));
             }
             body_vec.extend_from_slice(&buf[..n]);
         }
-        let (orig_name, bytes, restype, devices) = match parse_multipart(&body_vec, &delimiter, &closing) {
-            Ok(r) => r,
-            Err(e) => return send_json(req, 400, &json_err(&e.to_string())),
-        };
+        let (orig_name, bytes, restype, devices) =
+            match parse_multipart(&body_vec, &delimiter, &closing) {
+                Ok(r) => r,
+                Err(e) => return send_json(req, 400, &json_err(&e.to_string())),
+            };
         // 构造上传消息
         let (name_no_ext, ext) = split_name_ext(&orig_name);
         let _ = name_no_ext;
@@ -392,16 +472,31 @@ pub fn start(ctx: Context) -> Result<WebServer> {
         let (status, resp_bytes) = match ctx.upload_tx.lock().map(|mut g| g.clone()) {
             Ok(Some(tx)) => {
                 if tx.send(msg).is_ok() {
-                    (202, serde_json::to_vec(&UploadResponse{
-                        item: Some(ResourceItemView{name: orig_name, restype, source: "本地".to_string(), devices: Vec::new(), manifest_path: String::new(), paid:false}),
-                        size: 0, note: "上传已登记，后台写入 SD 卡…".to_string()
-                    }).unwrap_or_default())
-                } else { (503, json_err("upload channel closed")) }
-            },
+                    (
+                        202,
+                        serde_json::to_vec(&UploadResponse {
+                            item: Some(ResourceItemView {
+                                name: orig_name,
+                                restype,
+                                source: "本地".to_string(),
+                                devices: Vec::new(),
+                                manifest_path: String::new(),
+                                paid: false,
+                            }),
+                            size: 0,
+                            note: "上传已登记，后台写入 SD 卡…".to_string(),
+                        })
+                        .unwrap_or_default(),
+                    )
+                } else {
+                    (503, json_err("upload channel closed"))
+                }
+            }
             _ => (503, json_err("upload channel not initialized")),
         };
         send_json(req, status, &resp_bytes)
-    }).map_err(|e| anyhow!("register /api/upload: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/upload: {e:?}"))?;
 
     // GET/POST /api/mi-account/*
     srv.fn_handler::<Method, _>("/api/mi-account/status", Method::Get, move |req| {
@@ -410,59 +505,102 @@ pub fn start(ctx: Context) -> Result<WebServer> {
             _ => (500, json_err("bad mi-resp")),
         });
         send_json(req, status, &body)
-    }).map_err(|e| anyhow!("register /api/mi-account/status: {e:?}"))?;
-    srv.fn_handler::<Method, _>("/api/mi-account/login-password", Method::Post, move |mut req| {
-        let mut raw = Vec::<u8>::new();
-        let mut buf = [0u8; 2048];
-        loop {
-            use embedded_svc::io::Read;
-            let n = match req.read(&mut buf) { Ok(n)=>n, Err(_)=>break };
-            if n == 0 { break; }
-            raw.extend_from_slice(&buf[..n]);
-            if raw.len() > 8192 { break; }
-        }
-        let (status, body) = match serde_json::from_slice::<MiLoginRequest>(&raw) {
-            Ok(l) => sync_blocking_mi_cmd(ctx, MiCmd::Login{user:l.user,password:l.password}, |r| match r {
-                MiResp::Login(Ok(s)) => (200, serde_json::to_vec(&s).unwrap_or_default()),
-                MiResp::Login(Err(e)) => (401, json_err(&e)),
-                _ => (500, json_err("bad mi-resp")),
-            }),
-            Err(e) => (400, json_err(&format!("bad login json: {e}"))),
-        };
-        send_json(req, status, &body)
-    }).map_err(|e| anyhow!("register /api/mi-account/login-password: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/mi-account/status: {e:?}"))?;
+    srv.fn_handler::<Method, _>(
+        "/api/mi-account/login-password",
+        Method::Post,
+        move |mut req| {
+            let mut raw = Vec::<u8>::new();
+            let mut buf = [0u8; 2048];
+            loop {
+                use embedded_svc::io::Read;
+                let n = match req.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if raw.len() > 8192 {
+                    break;
+                }
+            }
+            let (status, body) = match serde_json::from_slice::<MiLoginRequest>(&raw) {
+                Ok(l) => sync_blocking_mi_cmd(
+                    ctx,
+                    MiCmd::Login {
+                        user: l.user,
+                        password: l.password,
+                    },
+                    |r| match r {
+                        MiResp::Login(Ok(s)) => (200, serde_json::to_vec(&s).unwrap_or_default()),
+                        MiResp::Login(Err(e)) => (401, json_err(&e)),
+                        _ => (500, json_err("bad mi-resp")),
+                    },
+                ),
+                Err(e) => (400, json_err(&format!("bad login json: {e}"))),
+            };
+            send_json(req, status, &body)
+        },
+    )
+    .map_err(|e| anyhow!("register /api/mi-account/login-password: {e:?}"))?;
     srv.fn_handler::<Method, _>("/api/mi-account/logout", Method::Post, move |req| {
         let (status, body) = sync_blocking_mi_cmd(ctx, MiCmd::Logout, |r| match r {
-            MiResp::Logout(Ok(_)) => (200, serde_json::to_vec(&OkResponse{ok:true,note:None,fw_version:None,build_time:None}).unwrap_or_default()),
+            MiResp::Logout(Ok(_)) => (
+                200,
+                serde_json::to_vec(&OkResponse {
+                    ok: true,
+                    note: None,
+                    fw_version: None,
+                    build_time: None,
+                })
+                .unwrap_or_default(),
+            ),
             MiResp::Logout(Err(e)) => (500, json_err(&e)),
             _ => (500, json_err("bad mi-resp")),
         });
         send_json(req, status, &body)
-    }).map_err(|e| anyhow!("register /api/mi-account/logout: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/mi-account/logout: {e:?}"))?;
     srv.fn_handler::<Method, _>("/api/mi-account/devices", Method::Get, move |req| {
         let (status, body) = sync_blocking_mi_cmd(ctx, MiCmd::ListDevices, |r| match r {
-            MiResp::ListDevices(Ok(vs)) => (200, serde_json::to_vec(&MiDevicesResponse{devices:vs}).unwrap_or_default()),
+            MiResp::ListDevices(Ok(vs)) => (
+                200,
+                serde_json::to_vec(&MiDevicesResponse { devices: vs }).unwrap_or_default(),
+            ),
             MiResp::ListDevices(Err(e)) => (500, json_err(&e)),
             _ => (500, json_err("bad mi-resp")),
         });
         send_json(req, status, &body)
-    }).map_err(|e| anyhow!("register /api/mi-account/devices: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/mi-account/devices: {e:?}"))?;
 
     // GET /api/plugins → list via plugins_tx / plugins_resp_rx
     srv.fn_handler::<Method, _>("/api/plugins", Method::Get, move |req| {
         use std::ops::DerefMut;
-        let (status, body) = match (ctx.plugins_tx.lock().ok().as_deref().cloned(), ctx.plugins_resp_rx.lock().ok().as_deref_mut()) {
+        let (status, body) = match (
+            ctx.plugins_tx.lock().ok().as_deref().cloned(),
+            ctx.plugins_resp_rx.lock().ok().as_deref_mut(),
+        ) {
             (Some(Some(tx)), Some(rx)) => {
-                if tx.send(PluginCmd::List).is_err() { (503, json_err("plugins tx closed")) }
-                else {
+                if tx.send(PluginCmd::List).is_err() {
+                    (503, json_err("plugins tx closed"))
+                } else {
                     // 同步 spin-wait（HTTPd task 独立线程；max 2s）
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
                     let mut pl: Option<PluginsResponse> = None;
                     while std::time::Instant::now() < deadline {
                         use tokio::sync::mpsc::error::TryRecvError;
                         match rx.try_recv() {
-                            Ok(p) => { pl = Some(p); break; }
-                            Err(TryRecvError::Empty) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                            Ok(p) => {
+                                pl = Some(p);
+                                break;
+                            }
+                            Err(TryRecvError::Empty) => {
+                                std::thread::sleep(std::time::Duration::from_millis(10))
+                            }
                             Err(TryRecvError::Disconnected) => break,
                         }
                     }
@@ -471,11 +609,12 @@ pub fn start(ctx: Context) -> Result<WebServer> {
                         None => (504, json_err("plugins list 超时")),
                     }
                 }
-            },
+            }
             _ => (503, json_err("plugins channels 未初始化")),
         };
         send_json(req, status, &body)
-    }).map_err(|e| anyhow!("register /api/plugins: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/plugins: {e:?}"))?;
 
     // POST /api/plugins/{id}/unload
     srv.fn_handler::<Method, _>("/api/plugins/unload", Method::Post, move |mut req| {
@@ -484,34 +623,65 @@ pub fn start(ctx: Context) -> Result<WebServer> {
         let mut buf = [0u8; 2048];
         loop {
             use embedded_svc::io::Read;
-            let n = match req.read(&mut buf) { Ok(n)=>n, Err(_)=>break };
-            if n == 0 { break; }
+            let n = match req.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            if n == 0 {
+                break;
+            }
             raw.extend_from_slice(&buf[..n]);
-            if raw.len() > 4096 { break; }
+            if raw.len() > 4096 {
+                break;
+            }
         }
         let id = || -> Result<String, String> {
-            #[derive(Deserialize)] struct R { id: String }
-            serde_json::from_slice::<R>(&raw).map(|x| x.id).map_err(|e| format!("{e}"))
+            #[derive(Deserialize)]
+            struct R {
+                id: String,
+            }
+            serde_json::from_slice::<R>(&raw)
+                .map(|x| x.id)
+                .map_err(|e| format!("{e}"))
         }();
         let id = match id {
             Ok(i) => i,
             // 备用：从 URI 中取（/api/plugins/<id>/unload）
-            Err(_) => req.uri().trim_start_matches("/api/plugins/").trim_end_matches("/unload").to_string(),
+            Err(_) => req
+                .uri()
+                .trim_start_matches("/api/plugins/")
+                .trim_end_matches("/unload")
+                .to_string(),
         };
         let (status, body) = match ctx.unload_tx.lock().ok().as_deref().cloned() {
             Some(Some(tx)) => {
                 if tx.send(id.clone()).is_ok() {
-                    (202, serde_json::to_vec(&OkResponse{ok:true,note:Some(format!("unload {id} 已请求")),fw_version:None,build_time:None}).unwrap_or_default())
-                } else { (503, json_err("unload tx closed")) }
-            },
+                    (
+                        202,
+                        serde_json::to_vec(&OkResponse {
+                            ok: true,
+                            note: Some(format!("unload {id} 已请求")),
+                            fw_version: None,
+                            build_time: None,
+                        })
+                        .unwrap_or_default(),
+                    )
+                } else {
+                    (503, json_err("unload tx closed"))
+                }
+            }
             _ => (503, json_err("unload tx 未初始化")),
         };
         send_json(req, status, &body)
-    }).map_err(|e| anyhow!("register /api/plugins/*/unload: {e:?}"))?;
+    })
+    .map_err(|e| anyhow!("register /api/plugins/*/unload: {e:?}"))?;
 
     // 404 兜底（注册 0 URI 已够，浏览器 404 的响应交给 esp-idf 默认 html 页）
 
-    log::info!("[webui] EspHttpServer started on port 80 (max_sessions={})", conf.max_sessions);
+    log::info!(
+        "[webui] EspHttpServer started on port 80 (max_sessions={})",
+        conf.max_sessions
+    );
     Ok(WebServer { _inner: srv })
 }
 
@@ -526,13 +696,19 @@ fn send_json<R: embedded_svc::http::server::Request + ?Sized>(
     let mut resp = req.into_response(
         status,
         None,
-        &[("Content-Type", "application/json"), ("Content-Length", &body.len().to_string())],
+        &[
+            ("Content-Type", "application/json"),
+            ("Content-Length", &body.len().to_string()),
+        ],
     )?;
     resp.write_all(body)
 }
 
 fn json_err(msg: &str) -> Vec<u8> {
-    serde_json::to_vec(&ErrorResponse { error: msg.to_string() }).unwrap_or_default()
+    serde_json::to_vec(&ErrorResponse {
+        error: msg.to_string(),
+    })
+    .unwrap_or_default()
 }
 
 fn header<R: embedded_svc::http::server::Request + ?Sized>(req: &R, key: &str) -> Option<String> {
@@ -564,17 +740,25 @@ fn parse_multipart(
     let mut sections: Vec<&[u8]> = Vec::new();
     let mut start = 0usize;
     loop {
-        let Some(idx) = find_subseq(&body[start..], del) else { break };
+        let Some(idx) = find_subseq(&body[start..], del) else {
+            break;
+        };
         let abs = start + idx;
         let after = abs + del.len();
         // section body: abs+del.len → 下一个 del 或 close
         let end_rel = find_subseq(&body[after..], del).unwrap_or({
-            if let Some(c) = find_subseq(&body[after..], close) { c } else { body.len() - after }
+            if let Some(c) = find_subseq(&body[after..], close) {
+                c
+            } else {
+                body.len() - after
+            }
         });
         let section_end = after + end_rel;
         sections.push(&body[after..section_end]);
         start = after + end_rel;
-        if start >= body.len() { break; }
+        if start >= body.len() {
+            break;
+        }
     }
 
     let mut orig_name: Option<String> = None;
@@ -590,15 +774,27 @@ fn parse_multipart(
         let headers = &sec[..head_end];
         let mut body_bytes = &sec[head_end + 4..];
         // 去掉 body 尾部可能的 \r\n
-        while body_bytes.ends_with(b"\r\n") { body_bytes = &body_bytes[..body_bytes.len()-2]; }
-        while body_bytes.ends_with(b"\n")   { body_bytes = &body_bytes[..body_bytes.len()-1]; }
+        while body_bytes.ends_with(b"\r\n") {
+            body_bytes = &body_bytes[..body_bytes.len() - 2];
+        }
+        while body_bytes.ends_with(b"\n") {
+            body_bytes = &body_bytes[..body_bytes.len() - 1];
+        }
         // 解析 headers：每行 Content-Disposition: form-data; name="…"; filename="…"
         let mut disp_name: Option<String> = None;
         let mut filename: Option<String> = None;
         for line in headers.split(|&b| b == b'\n') {
-            let line = if line.ends_with(b"\r") { &line[..line.len()-1] } else { line };
-            if line.len() < 20 { continue; }
-            let Ok(s) = std::str::from_utf8(line) else { continue };
+            let line = if line.ends_with(b"\r") {
+                &line[..line.len() - 1]
+            } else {
+                line
+            };
+            if line.len() < 20 {
+                continue;
+            }
+            let Ok(s) = std::str::from_utf8(line) else {
+                continue;
+            };
             let lower = s.to_ascii_lowercase();
             if lower.starts_with("content-disposition") {
                 // 用 ; 切，再找 name="…" 和 filename="…"
@@ -606,11 +802,15 @@ fn parse_multipart(
                     let p = part.trim();
                     if let Some(rest) = p.strip_prefix("name=") {
                         let un = rest.trim_matches('"').trim();
-                        if !un.is_empty() { disp_name = Some(un.to_string()); }
+                        if !un.is_empty() {
+                            disp_name = Some(un.to_string());
+                        }
                     }
                     if let Some(rest) = p.strip_prefix("filename=") {
                         let un = rest.trim_matches('"').trim();
-                        if !un.is_empty() { filename = Some(un.to_string()); }
+                        if !un.is_empty() {
+                            filename = Some(un.to_string());
+                        }
                     }
                 }
             }
@@ -623,17 +823,17 @@ fn parse_multipart(
                     orig_name = Some(format!("upload_{}", body_bytes.len()));
                 }
                 file_bytes = Some(body_bytes.to_vec());
-            },
+            }
             Some("restype") => {
                 if let Ok(s) = std::str::from_utf8(body_bytes) {
                     restype = Some(s.trim().to_string());
                 }
-            },
+            }
             Some("devices") => {
                 if let Ok(s) = std::str::from_utf8(body_bytes) {
                     devices_csv = Some(s.trim().to_string());
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -642,23 +842,34 @@ fn parse_multipart(
     let name = orig_name.unwrap_or_else(|| format!("upload_{}", bytes.len()));
     let (_, ext) = split_name_ext_owned(&name);
     // restype 判空：按扩展名自动推断
-    let restype = restype.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| match ext.to_ascii_lowercase().as_str() {
-        "rpk" => "quickapp".to_string(),
-        "mwz" | "face" => "watchface".to_string(),
-        "abp" => "plugin".to_string(),
-        "bin" => "resource".to_string(),
-        _ => "unknown".to_string(),
+    let restype = restype.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+        match ext.to_ascii_lowercase().as_str() {
+            "rpk" => "quickapp".to_string(),
+            "mwz" | "face" => "watchface".to_string(),
+            "abp" => "plugin".to_string(),
+            "bin" => "resource".to_string(),
+            _ => "unknown".to_string(),
+        }
     });
     let devices: Vec<String> = devices_csv
-        .map(|s| s.split(';').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+        .map(|s| {
+            s.split(';')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     Ok((name, bytes, restype, devices))
 }
 
 fn find_subseq(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() { return Some(0); }
-    if needle.len() > hay.len() { return None; }
-    (0..=hay.len() - needle.len()).find(|&i| &hay[i..i+needle.len()] == needle)
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len()).find(|&i| &hay[i..i + needle.len()] == needle)
 }
 
 // 同步阻塞地发 cmd、等 rx（在 httpd task 线程上做，最长 6 秒；小米 API 走 net_http
@@ -668,13 +879,18 @@ where
     F: FnOnce(MiResp) -> (u16, Vec<u8>),
 {
     use tokio::sync::mpsc::error::TryRecvError;
-    match (ctx.mi_cmd_tx.lock().ok().as_deref().cloned(), ctx.mi_resp_rx.lock().ok()) {
+    match (
+        ctx.mi_cmd_tx.lock().ok().as_deref().cloned(),
+        ctx.mi_resp_rx.lock().ok(),
+    ) {
         (Some(Some(tx)), Some(mut rx_lock)) => {
             let rx = match rx_lock.as_mut() {
                 Some(r) => r,
                 None => return (503, json_err("mi resp rx 未初始化")),
             };
-            if tx.send(cmd).is_err() { return (503, json_err("mi cmd tx closed")); }
+            if tx.send(cmd).is_err() {
+                return (503, json_err("mi cmd tx closed"));
+            }
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
             loop {
                 match rx.try_recv() {
@@ -684,12 +900,15 @@ where
                             return (504, json_err("mi 接口响应超时 (>6s)"));
                         }
                         std::thread::sleep(std::time::Duration::from_millis(25));
-                    },
+                    }
                     Err(TryRecvError::Disconnected) => return (500, json_err("mi 接口通道断开")),
                 }
             }
-        },
-        _ => (503, json_err("mi-account 通道未初始化（mi_account feature 未启用？）")),
+        }
+        _ => (
+            503,
+            json_err("mi-account 通道未初始化（mi_account feature 未启用？）"),
+        ),
     }
 }
 
@@ -699,9 +918,12 @@ mod tests {
 
     #[test]
     fn split_name_ext_ok() {
-        assert_eq!(split_name_ext("a.rpk"), ("a","rpk"));
-        assert_eq!(split_name_ext("my.nice.pack.v1.2.rpk"), ("my.nice.pack.v1.2","rpk"));
-        assert_eq!(split_name_ext("noext"), ("noext",""));
+        assert_eq!(split_name_ext("a.rpk"), ("a", "rpk"));
+        assert_eq!(
+            split_name_ext("my.nice.pack.v1.2.rpk"),
+            ("my.nice.pack.v1.2", "rpk")
+        );
+        assert_eq!(split_name_ext("noext"), ("noext", ""));
     }
 
     #[test]
@@ -714,7 +936,8 @@ mod tests {
     fn parse_multipart_minimal() {
         // 最小有效 multipart
         let body = b"------bound\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.rpk\"\r\n\r\nHELLO WORLD\r\n------bound--\r\n";
-        let (name, bytes, rt, devs) = parse_multipart(body, "------bound", "------bound--").unwrap();
+        let (name, bytes, rt, devs) =
+            parse_multipart(body, "------bound", "------bound--").unwrap();
         assert_eq!(name, "test.rpk");
         assert_eq!(bytes, b"HELLO WORLD");
         assert_eq!(rt, "quickapp"); // rpk ext 推断

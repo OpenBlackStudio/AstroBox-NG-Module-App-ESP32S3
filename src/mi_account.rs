@@ -21,7 +21,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{nvs_config, net_http};
+use crate::{net_http, nvs_config};
 
 const NVS_NS: &str = "mi_account";
 const NVS_KEY_SESSION: &str = "session";
@@ -103,8 +103,8 @@ pub async fn login_with_password(username: &str, password: &str) -> Result<Login
     let (_status, body) = net_http::post_form(LOGIN_URL, &form, &headers).await?;
 
     let raw = strip_jsonp(&body, &callback);
-    let resp: LoginRawResp = serde_json::from_str(&raw)
-        .with_context(|| format!("parse login response: {raw}"))?;
+    let resp: LoginRawResp =
+        serde_json::from_str(&raw).with_context(|| format!("parse login response: {raw}"))?;
 
     match resp.user_status {
         0 => {
@@ -155,8 +155,8 @@ pub async fn login_with_sms_code(ticket: &str, code: &str) -> Result<MiAccountSe
     let headers = vec![("User-Agent", USER_AGENT)];
     let (_status, body) = net_http::post_form(LOGIN_SECURE_URL, &form, &headers).await?;
     let raw = strip_jsonp(&body, &callback);
-    let resp: LoginRawResp = serde_json::from_str(&raw)
-        .with_context(|| format!("parse sms login response: {raw}"))?;
+    let resp: LoginRawResp =
+        serde_json::from_str(&raw).with_context(|| format!("parse sms login response: {raw}"))?;
     if resp.user_status != 0 {
         return Err(anyhow!(
             "sms login failed: status={}, desc={}",

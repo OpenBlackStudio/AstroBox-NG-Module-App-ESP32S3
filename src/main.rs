@@ -74,10 +74,15 @@ static WIFI_CONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 static WIFI_STA_IP: std::sync::RwLock<String> = std::sync::RwLock::const_new(String::new());
 
 #[cfg(feature = "webui")]
-fn nvs_config_is_wifi_connected() -> bool { WIFI_CONNECTED.load(std::sync::atomic::Ordering::Relaxed) }
+fn nvs_config_is_wifi_connected() -> bool {
+    WIFI_CONNECTED.load(std::sync::atomic::Ordering::Relaxed)
+}
 #[cfg(feature = "webui")]
 fn nvs_config_wifi_sta_ip() -> Result<String, String> {
-    WIFI_STA_IP.read().map(|g| g.clone()).map_err(|e| format!("{e:?}"))
+    WIFI_STA_IP
+        .read()
+        .map(|g| g.clone())
+        .map_err(|e| format!("{e:?}"))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -160,20 +165,23 @@ async fn run_app() -> anyhow::Result<()> {
 
     // ===== 4. SPI2 共享总线驱动（SCLK=GPIO7, MOSI=GPIO6, MISO=GPIO8） =====
     //      LCD (CS=GPIO5) 和 SD 卡 (CS=GPIO9) 分别创建独立 SpiDeviceDriver。
-    let shared_spi: SpiDriver<'static> =
-        sdcard::new_spi2_bus_driver(spi2, gpio7, gpio6, gpio8)?;
+    let shared_spi: SpiDriver<'static> = sdcard::new_spi2_bus_driver(spi2, gpio7, gpio6, gpio8)?;
 
     // ===== 5. 尝试挂载 SD 卡（CS=GPIO9）；失败降级（sd=None，只打串口日志） =====
     let (maybe_sd, sd_root): (Option<sdcard::SdCard>, Option<&'static Path>) =
-        match sdcard::SdCard::mount(&shared_spi, sdcard::SdCardPins { miso: gpio8, cs: gpio9 }) {
+        match sdcard::SdCard::mount(
+            &shared_spi,
+            sdcard::SdCardPins {
+                miso: gpio8,
+                cs: gpio9,
+            },
+        ) {
             Ok(sd) => {
                 let root: &'static Path = Path::new(sdcard::SDCARD_ROOT);
                 (Some(sd), Some(root))
             }
             Err(e) => {
-                log::warn!(
-                    "SD 卡未挂载，相关功能降级（SD 日志 / 本地安装 / 缓存关闭）: {e:#}"
-                );
+                log::warn!("SD 卡未挂载，相关功能降级（SD 日志 / 本地安装 / 缓存关闭）: {e:#}");
                 (None, None)
             }
         };
@@ -196,7 +204,8 @@ async fn run_app() -> anyhow::Result<()> {
     if let Some(initial_ota) = ota_manager.check_for_update() {
         log::debug!(
             "OTA update available: v{} ({} bytes)",
-            initial_ota.version, initial_ota.size
+            initial_ota.version,
+            initial_ota.size
         );
     }
 
@@ -329,12 +338,15 @@ async fn run_app() -> anyhow::Result<()> {
     {
         use std::sync::{Arc, Mutex};
         // 1) 通道
-        let (install_tx, install_rx_ch) = tokio::sync::mpsc::unbounded_channel::<web_ui::InstallRequest>();
+        let (install_tx, install_rx_ch) =
+            tokio::sync::mpsc::unbounded_channel::<web_ui::InstallRequest>();
         let (upload_tx, upload_rx_ch) = tokio::sync::mpsc::unbounded_channel::<web_ui::UploadMsg>();
         let (mi_cmd_tx, mi_rx_ch) = tokio::sync::mpsc::unbounded_channel::<web_ui::MiCmd>();
         let (mi_resp_tx, mi_resp_rx_ch) = tokio::sync::mpsc::unbounded_channel::<web_ui::MiResp>();
-        let (plugins_tx, plugins_rx_ch) = tokio::sync::mpsc::unbounded_channel::<web_ui::PluginCmd>();
-        let (plugins_resp_tx, plugins_resp_rx_ch) = tokio::sync::mpsc::unbounded_channel::<web_ui::PluginsResponse>();
+        let (plugins_tx, plugins_rx_ch) =
+            tokio::sync::mpsc::unbounded_channel::<web_ui::PluginCmd>();
+        let (plugins_resp_tx, plugins_resp_rx_ch) =
+            tokio::sync::mpsc::unbounded_channel::<web_ui::PluginsResponse>();
         let (unload_tx, unload_rx_ch) = tokio::sync::mpsc::unbounded_channel::<String>();
         webui_install_rx = Some(install_rx_ch);
         webui_upload_rx = Some(upload_rx_ch);
@@ -372,13 +384,16 @@ async fn run_app() -> anyhow::Result<()> {
                     let known: Vec<web_ui::DeviceView> = addrs
                         .iter()
                         .map(|a| web_ui::DeviceView {
-                            name: guess_device_name_from_addr(a).unwrap_or_else(|| "Mi Band".to_string()),
+                            name: guess_device_name_from_addr(a)
+                                .unwrap_or_else(|| "Mi Band".to_string()),
                             address: a.clone(),
                             model: None,
                             connected: true,
                         })
                         .collect();
-                    if let Ok(mut g) = ble_devices.lock() { *g = known; }
+                    if let Ok(mut g) = ble_devices.lock() {
+                        *g = known;
+                    }
                 }
             });
         }
@@ -432,46 +447,85 @@ async fn run_app() -> anyhow::Result<()> {
         let shared_state_u = shared_state.clone();
         let mut urx = webui_upload_rx.take().unwrap();
         tokio::task::spawn_local(async move {
-            while let Some(web_ui::UploadMsg::Register { orig_name, ext, bytes, restype, devices }) = urx.recv().await {
+            while let Some(web_ui::UploadMsg::Register {
+                orig_name,
+                ext,
+                bytes,
+                restype,
+                devices,
+            }) = urx.recv().await
+            {
                 let shared = shared_state_u.clone();
                 let (orig, ex) = (orig_name.clone(), ext.clone());
                 tokio::task::spawn_local(async move {
-                    if let Some(root) = { let ss = shared.borrow(); ss.sd_root.map(|p| p.to_path_buf()) } {
+                    if let Some(root) = {
+                        let ss = shared.borrow();
+                        ss.sd_root.map(|p| p.to_path_buf())
+                    } {
                         // restype 规范化
-                        use crate::repo::{RepoType, local_csv_source};
-                        let rt = if restype.eq_ignore_ascii_case("watchface") || ext.eq_ignore_ascii_case("mwz") || ext.eq_ignore_ascii_case("face") {
+                        use crate::repo::{local_csv_source, RepoType};
+                        let rt = if restype.eq_ignore_ascii_case("watchface")
+                            || ext.eq_ignore_ascii_case("mwz")
+                            || ext.eq_ignore_ascii_case("face")
+                        {
                             RepoType::Watchface
-                        } else if restype.eq_ignore_ascii_case("plugin") || ext.eq_ignore_ascii_case("abp") {
+                        } else if restype.eq_ignore_ascii_case("plugin")
+                            || ext.eq_ignore_ascii_case("abp")
+                        {
                             // 插件不走 Repo 登记（插件 manifest 独立），直接落盘到 packages
-                            let _ = local_packages::classify_dir_path(&root, &orig, &ex, bytes).await;
+                            let _ =
+                                local_packages::classify_dir_path(&root, &orig, &ex, bytes).await;
                             return;
-                        } else if restype.eq_ignore_ascii_case("resource") || ext.eq_ignore_ascii_case("bin") {
+                        } else if restype.eq_ignore_ascii_case("resource")
+                            || ext.eq_ignore_ascii_case("bin")
+                        {
                             // ResourceBin 也直接落盘 packages/ 不走 repo index
-                            let _ = local_packages::classify_dir_path(&root, &orig, &ex, bytes).await;
+                            let _ =
+                                local_packages::classify_dir_path(&root, &orig, &ex, bytes).await;
                             return;
-                        } else { RepoType::QuickApp };
+                        } else {
+                            RepoType::QuickApp
+                        };
                         // 写 SD → local index.csv
-                        match local_csv_source::write_uploaded_bytes(&root, &orig, &ex, &bytes).await {
+                        match local_csv_source::write_uploaded_bytes(&root, &orig, &ex, &bytes)
+                            .await
+                        {
                             Ok(abs_path) => {
                                 let name_stem = std::path::Path::new(&orig)
-                                    .file_stem().and_then(|s| s.to_str()).unwrap_or(&orig).to_string();
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(&orig)
+                                    .to_string();
                                 if let Err(e) = local_csv_source::add_local_entry(
                                     &root, &name_stem, rt, &devices, &abs_path, None, None,
-                                ).await {
+                                )
+                                .await
+                                {
                                     log::warn!("[webui/upload] add_local_entry failed: {e:#}");
-                                    gui::slint_ui::set_install_progress_text(format!("上传登记失败：{e}"));
+                                    gui::slint_ui::set_install_progress_text(format!(
+                                        "上传登记失败：{e}"
+                                    ));
                                 } else {
-                                    gui::slint_ui::set_install_progress_text(format!("✔ 已登记本地源：{name_stem}"));
-                                    log::info!("[webui/upload] registered {} as {:?} → {:?}", name_stem, rt, abs_path);
+                                    gui::slint_ui::set_install_progress_text(format!(
+                                        "✔ 已登记本地源：{name_stem}"
+                                    ));
+                                    log::info!(
+                                        "[webui/upload] registered {} as {:?} → {:?}",
+                                        name_stem,
+                                        rt,
+                                        abs_path
+                                    );
                                 }
-                            },
+                            }
                             Err(e) => {
                                 log::warn!("[webui/upload] write SD failed: {e:#}");
                                 gui::slint_ui::set_install_progress_text(format!("SD 写失败：{e}"));
                             }
                         }
                     } else {
-                        gui::slint_ui::set_install_progress_text("SD 卡未挂载，上传无法保存".to_string());
+                        gui::slint_ui::set_install_progress_text(
+                            "SD 卡未挂载，上传无法保存".to_string(),
+                        );
                     }
                 });
             }
@@ -485,28 +539,42 @@ async fn run_app() -> anyhow::Result<()> {
                     web_ui::MiCmd::Status => {
                         let (ok, user, uid) = mi_account::session_status().await;
                         web_ui::MiResp::Status(web_ui::MiAccountStatus {
-                            logged_in: ok, user: user.clone(), user_id: uid,
+                            logged_in: ok,
+                            user: user.clone(),
+                            user_id: uid,
                         })
-                    },
-                    web_ui::MiCmd::Login { user, password } => {
-                        web_ui::MiResp::Login(match mi_account::login_password(&user, &password).await {
+                    }
+                    web_ui::MiCmd::Login { user, password } => web_ui::MiResp::Login(
+                        match mi_account::login_password(&user, &password).await {
                             Ok(sess) => Ok(web_ui::MiAccountStatus {
-                                logged_in: true, user: Some(sess.user_id.clone()), user_id: Some(sess.user_id),
+                                logged_in: true,
+                                user: Some(sess.user_id.clone()),
+                                user_id: Some(sess.user_id),
                             }),
                             Err(e) => Err(format!("{e:#}")),
-                        })
-                    },
-                    web_ui::MiCmd::Logout => web_ui::MiResp::Logout(match mi_account::logout().await {
-                        Ok(()) => Ok(()), Err(e) => Err(format!("{e:#}")),
-                    }),
-                    web_ui::MiCmd::ListDevices => {
-                        web_ui::MiResp::ListDevices(match mi_account::fetch_device_list().await {
-                            Ok(list) => Ok(list.into_iter().map(|d| web_ui::MiDeviceView {
-                                name: d.name, model: d.model, mac: d.mac, did: d.did, is_online: d.is_online.unwrap_or(false),
-                            }).collect()),
+                        },
+                    ),
+                    web_ui::MiCmd::Logout => {
+                        web_ui::MiResp::Logout(match mi_account::logout().await {
+                            Ok(()) => Ok(()),
                             Err(e) => Err(format!("{e:#}")),
                         })
-                    },
+                    }
+                    web_ui::MiCmd::ListDevices => {
+                        web_ui::MiResp::ListDevices(match mi_account::fetch_device_list().await {
+                            Ok(list) => Ok(list
+                                .into_iter()
+                                .map(|d| web_ui::MiDeviceView {
+                                    name: d.name,
+                                    model: d.model,
+                                    mac: d.mac,
+                                    did: d.did,
+                                    is_online: d.is_online.unwrap_or(false),
+                                })
+                                .collect()),
+                            Err(e) => Err(format!("{e:#}")),
+                        })
+                    }
                 };
                 let _ = mi_resp_tx.send(resp);
             }
@@ -520,20 +588,30 @@ async fn run_app() -> anyhow::Result<()> {
                 {
                     let ps = plugin_runtime::list();
                     let _ = plugins_resp_tx.send(web_ui::PluginsResponse {
-                        plugins: ps.into_iter().map(|p| web_ui::PluginView {
-                            id: p.id, name: p.name, version: p.version, entry: p.entry,
-                        }).collect(),
+                        plugins: ps
+                            .into_iter()
+                            .map(|p| web_ui::PluginView {
+                                id: p.id,
+                                name: p.name,
+                                version: p.version,
+                                entry: p.entry,
+                            })
+                            .collect(),
                     });
                 }
                 #[cfg(not(feature = "plugin_runtime"))]
-                { let _ = plugins_resp_tx.send(web_ui::PluginsResponse { plugins: vec![] }); }
+                {
+                    let _ = plugins_resp_tx.send(web_ui::PluginsResponse { plugins: vec![] });
+                }
             }
         });
         let mut urx_un = webui_unload_rx.take().unwrap();
         tokio::task::spawn_local(async move {
             while let Some(id) = urx_un.recv().await {
                 #[cfg(feature = "plugin_runtime")]
-                { let _ = plugin_runtime::unload(&id); }
+                {
+                    let _ = plugin_runtime::unload(&id);
+                }
                 let _ = id;
             }
         });
@@ -560,10 +638,8 @@ async fn run_app() -> anyhow::Result<()> {
         let mut last_count: usize = 0;
         loop {
             ticker.tick().await;
-            let devices = corelib::ecs::with_rt_mut(|rt| {
-                rt.device_ids().cloned().collect::<Vec<_>>()
-            })
-            .await;
+            let devices =
+                corelib::ecs::with_rt_mut(|rt| rt.device_ids().cloned().collect::<Vec<_>>()).await;
             if devices.len() != last_count {
                 log::info!(
                     "[Transfer] Device roster: {} device(s) connected → {:?}",
@@ -784,11 +860,7 @@ async fn resource_panel_event_loop(
     }
 }
 
-fn cache_len(
-    tab: i32,
-    local: &[ListEntry],
-    astro: &[ListEntry],
-) -> usize {
+fn cache_len(tab: i32, local: &[ListEntry], astro: &[ListEntry]) -> usize {
     match tab {
         0 => local.len(),
         1 => astro.len(),
@@ -796,12 +868,7 @@ fn cache_len(
     }
 }
 
-fn entry_at(
-    tab: i32,
-    idx: usize,
-    local: &[ListEntry],
-    astro: &[ListEntry],
-) -> Option<&ListEntry> {
+fn entry_at(tab: i32, idx: usize, local: &[ListEntry], astro: &[ListEntry]) -> Option<&ListEntry> {
     match tab {
         0 => local.get(idx),
         1 => astro.get(idx),
@@ -809,15 +876,16 @@ fn entry_at(
     }
 }
 
-fn render_page_from_cache(
-    tab: i32,
-    page: i32,
-    local: &[ListEntry],
-    astro: &[ListEntry],
-) {
+fn render_page_from_cache(tab: i32, page: i32, local: &[ListEntry], astro: &[ListEntry]) {
     let total = cache_len(tab, local, astro);
     let start = (page as usize) * LIST_PAGE_SIZE;
-    let mut items = [String::new(), String::new(), String::new(), String::new(), String::new()];
+    let mut items = [
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    ];
     for i in 0..LIST_PAGE_SIZE {
         if let Some(e) = entry_at(tab, start + i, local, astro) {
             items[i] = e.display_line();
@@ -846,17 +914,17 @@ async fn refresh_tab_cache(
                 return;
             }
             gui::slint_ui::set_install_progress_text("扫描 SD 包…".to_string());
-            let packages = local_packages::scan_packages(sd_root).await.unwrap_or_default();
+            let packages = local_packages::scan_packages(sd_root)
+                .await
+                .unwrap_or_default();
             *cache_local = packages.into_iter().map(ListEntry::Local).collect();
             *local_loaded = true;
             if cache_local.is_empty() {
-                gui::slint_ui::set_install_progress_text(
-                    if sd_root.is_some() {
-                        "SD 卡未发现安装包（放到 /sdcard/astrobox/packages/）".to_string()
-                    } else {
-                        "未检测到 SD 卡".to_string()
-                    },
-                );
+                gui::slint_ui::set_install_progress_text(if sd_root.is_some() {
+                    "SD 卡未发现安装包（放到 /sdcard/astrobox/packages/）".to_string()
+                } else {
+                    "未检测到 SD 卡".to_string()
+                });
             } else {
                 gui::slint_ui::set_install_progress_text(format!(
                     "SD 扫描完成，共 {} 项",
@@ -868,9 +936,7 @@ async fn refresh_tab_cache(
             if !force && *astro_loaded {
                 return;
             }
-            gui::slint_ui::set_install_progress_text(
-                "加载 AstroBox 官方源…".to_string(),
-            );
+            gui::slint_ui::set_install_progress_text("加载 AstroBox 官方源…".to_string());
             #[cfg(feature = "repo_net")]
             {
                 // 设备过滤：若有连接设备则按型号。
@@ -894,9 +960,7 @@ async fn refresh_tab_cache(
             #[cfg(not(feature = "repo_net"))]
             {
                 cache_astro.clear();
-                gui::slint_ui::set_install_progress_text(
-                    "未启用 repo_net feature".to_string(),
-                );
+                gui::slint_ui::set_install_progress_text("未启用 repo_net feature".to_string());
             }
             *astro_loaded = true;
         }
@@ -935,9 +999,7 @@ fn spawn_install_task(
         let cache_to_sd = sd_root.is_some();
 
         let result: anyhow::Result<()> = match entry {
-            ListEntry::Local(lp) => {
-                local_packages::install_local(&addr, &lp, Some(tx)).await
-            }
+            ListEntry::Local(lp) => local_packages::install_local(&addr, &lp, Some(tx)).await,
             ListEntry::Repo(item) => {
                 #[cfg(feature = "repo_net")]
                 {
@@ -1066,18 +1128,34 @@ async fn do_webui_install(
     // 2) 本地源安装：直接用 local_packages
     if is_local {
         // 找 SD 上对应 manifest_path（约定是 "<abs_file>.json"，真正的文件是去掉 .json）
-        let file_path = req.manifest_path.strip_suffix(".json").unwrap_or(&req.manifest_path).to_string();
+        let file_path = req
+            .manifest_path
+            .strip_suffix(".json")
+            .unwrap_or(&req.manifest_path)
+            .to_string();
         let ext = std::path::Path::new(&file_path)
-            .extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
         let Some(kind) = local_packages::classify(&ext) else {
             return Err(anyhow!("local install: unknown extension {ext}"));
         };
         let lp = local_packages::LocalPackage {
             name: std::path::Path::new(&file_path)
-                .file_stem().and_then(|s| s.to_str()).unwrap_or("local").to_string(),
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("local")
+                .to_string(),
             path: std::path::PathBuf::from(&file_path),
-            size: tokio::fs::metadata(&file_path).await.map(|m| m.len()).unwrap_or(0),
-            modified_at: tokio::fs::metadata(&file_path).await.ok().and_then(|m| m.modified().ok()),
+            size: tokio::fs::metadata(&file_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0),
+            modified_at: tokio::fs::metadata(&file_path)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok()),
             r#type: kind,
             guessed_pkg_name: None,
         };
@@ -1107,7 +1185,9 @@ async fn do_webui_install(
         let sd_root = shared.borrow().sd_root;
         let cache = sd_root.is_some();
         let manifest = crate::repo::astrobox_source::fetch_manifest(&item).await?;
-        crate::install::install_from_repo(&addr, &item, &manifest, cache, sd_root, None).await.map(|_| ())
+        crate::install::install_from_repo(&addr, &item, &manifest, cache, sd_root, None)
+            .await
+            .map(|_| ())
     }
     #[cfg(not(feature = "repo_net"))]
     {
@@ -1120,8 +1200,18 @@ async fn do_webui_install(
 /// 当前 corelib 只暴露 device_ids addr，没暴露 name，所以先返回
 /// "Mi Band + addr 末 2 字节" 这种友好形式，接入真实 roster 后再改。
 fn guess_device_name_from_addr(addr: &str) -> Option<String> {
-    let last4: String = addr.rsplit(':').take(2).collect::<Vec<_>>().into_iter().rev().collect::<String>();
-    if last4.is_empty() { None } else { Some(format!("Mi Band …{last4}")) }
+    let last4: String = addr
+        .rsplit(':')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    if last4.is_empty() {
+        None
+    } else {
+        Some(format!("Mi Band …{last4}"))
+    }
 }
 
 /// 用 ESP-IDF FFI `esp_netif_get_ip_info` 读取 STA IP。
@@ -1130,9 +1220,13 @@ fn read_sta_ip_snapshot() -> Option<String> {
     use esp_idf_sys::*;
     let ckey = std::ffi::CString::new("WIFI_STA_DEF").ok()?;
     let netif = unsafe { esp_netif_get_handle_from_ifkey(ckey.as_ptr()) };
-    if netif.is_null() { return None; }
+    if netif.is_null() {
+        return None;
+    }
     let mut info: esp_netif_ip_info_t = unsafe { std::mem::zeroed() };
-    if unsafe { esp_netif_get_ip_info(netif, &mut info) } != 0 { return None; }
+    if unsafe { esp_netif_get_ip_info(netif, &mut info) } != 0 {
+        return None;
+    }
     // ip.addr: u32 (LE byte order)
     let addr = info.ip.addr;
     Some(format!(
@@ -1166,7 +1260,7 @@ fn spawn_sntp_init_best_effort() {
                 // 简化版：等待 50ms 给网络 up，然后 sntp_init()
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 esp_idf_svc::sys::sntp_setoperatingmode(0); // SNTP_OPMODE_POLL
-                // server 用默认 pool.ntp.org（sdkconfig.defaults 已设）
+                                                            // server 用默认 pool.ntp.org（sdkconfig.defaults 已设）
                 esp_idf_svc::sys::sntp_init();
             });
         })
@@ -1183,10 +1277,7 @@ async fn init_wifi_with_retry(
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    let mut wifi = BlockingWifi::wrap(
-        EspWifi::new(modem, sys_loop.clone(), Some(nvs))?,
-        sys_loop,
-    )?;
+    let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs))?, sys_loop)?;
 
     let wifi_configuration = Configuration::Client(ClientConfiguration {
         ssid: ssid
@@ -1211,9 +1302,7 @@ async fn init_wifi_with_retry(
                     return Ok(wifi);
                 }
                 Err(err) => {
-                    log::warn!(
-                        "Wi-Fi netif up failed on attempt {attempt}: {err:?}"
-                    );
+                    log::warn!("Wi-Fi netif up failed on attempt {attempt}: {err:?}");
                 }
             },
             Err(err) => {
@@ -1242,7 +1331,10 @@ async fn ota_check_loop(manager: std::sync::Arc<ota::OtaManager>) {
         if let Some(info) = manager.check_for_update() {
             log::debug!(
                 "OTA update available: v{} ({} bytes, {}, url: {})",
-                info.version, info.size, info.release_notes, info.url
+                info.version,
+                info.size,
+                info.release_notes,
+                info.url
             );
         }
     }
@@ -1378,10 +1470,8 @@ fn format_speed_text(speed_bps: f64, arrow: &str) -> String {
 }
 
 async fn log_device_roster() {
-    let device_ids = corelib::ecs::with_rt_mut(|rt| {
-        rt.device_ids().cloned().collect::<Vec<_>>()
-    })
-    .await;
+    let device_ids =
+        corelib::ecs::with_rt_mut(|rt| rt.device_ids().cloned().collect::<Vec<_>>()).await;
 
     if device_ids.is_empty() {
         return;
@@ -1393,20 +1483,15 @@ async fn log_device_roster() {
                 log::info!("[Transfer] Device: {} ({})", name, addr);
             }
             Err(err) => {
-                log::debug!(
-                    "[Transfer] Failed to get name for {}: {err:?}",
-                    addr
-                );
+                log::debug!("[Transfer] Failed to get name for {}: {err:?}", addr);
             }
         }
     }
 }
 
 async fn sync_installed_items() {
-    let device_ids = corelib::ecs::with_rt_mut(|rt| {
-        rt.device_ids().cloned().collect::<Vec<_>>()
-    })
-    .await;
+    let device_ids =
+        corelib::ecs::with_rt_mut(|rt| rt.device_ids().cloned().collect::<Vec<_>>()).await;
 
     if device_ids.is_empty() {
         return;
@@ -1423,10 +1508,7 @@ async fn sync_installed_items() {
                 );
             }
             Err(err) => {
-                log::debug!(
-                    "[Install] Failed to list watchfaces on {}: {err:?}",
-                    addr
-                );
+                log::debug!("[Install] Failed to list watchfaces on {}: {err:?}", addr);
             }
         }
 
@@ -1440,10 +1522,7 @@ async fn sync_installed_items() {
                 );
             }
             Err(err) => {
-                log::debug!(
-                    "[Install] Failed to list quick apps on {}: {err:?}",
-                    addr
-                );
+                log::debug!("[Install] Failed to list quick apps on {}: {err:?}", addr);
             }
         }
     }
@@ -1485,26 +1564,23 @@ async fn wifi_reconnect_watchdog(
                 }
                 let connected = wifi.is_connected();
                 if !connected && !last_disconnected_snapshot {
-                    log::warn!(
-                        "[Wifi-Watchdog] link lost on worker thread; reconnecting..."
-                    );
+                    log::warn!("[Wifi-Watchdog] link lost on worker thread; reconnecting...");
                 }
                 last_disconnected_snapshot = connected;
                 if !connected {
                     let _ = wifi_reconnect_blocking(&mut wifi, &ssid, &password);
                 }
                 // === webui: refresh static WIFI_CONNECTED + WIFI_STA_IP every tick ===
-                WIFI_CONNECTED.store(
-                    connected,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                WIFI_CONNECTED.store(connected, std::sync::atomic::Ordering::Relaxed);
                 // STA IP：通过 EspWifi 的 netif 查询。
                 // （若未来 EspWifi 不可用，退化为不更新 IP — 不会打断 WiFi 重连。）
                 if connected {
                     let ip = read_sta_ip_snapshot();
                     if let Some(ip) = ip {
                         if let Ok(mut g) = WIFI_STA_IP.write() {
-                            if *g != ip { *g = ip; }
+                            if *g != ip {
+                                *g = ip;
+                            }
                         }
                     }
                 }
@@ -1517,7 +1593,10 @@ async fn wifi_reconnect_watchdog(
     loop {
         ticker.tick().await;
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        match cmd_tx.send(WifiCmd::CheckAndReconnect { reply: reply_tx }).await {
+        match cmd_tx
+            .send(WifiCmd::CheckAndReconnect { reply: reply_tx })
+            .await
+        {
             Ok(()) => {
                 let _ = reply_rx.await;
             }
@@ -1569,45 +1648,27 @@ pub async fn install_quick_app_file_on_device(
     install::install_quick_app_from_file(addr, package_name, file_path).await
 }
 
-pub async fn install_watchface_on_device(
-    addr: &str,
-    data: Vec<u8>,
-) -> anyhow::Result<()> {
+pub async fn install_watchface_on_device(addr: &str, data: Vec<u8>) -> anyhow::Result<()> {
     install::install_watchface(addr, data).await
 }
 
-pub async fn install_watchface_file_on_device(
-    addr: &str,
-    file_path: &str,
-) -> anyhow::Result<()> {
+pub async fn install_watchface_file_on_device(addr: &str, file_path: &str) -> anyhow::Result<()> {
     install::install_watchface_from_file(addr, file_path).await
 }
 
-pub async fn uninstall_quick_app_on_device(
-    addr: &str,
-    package_name: &str,
-) -> anyhow::Result<()> {
+pub async fn uninstall_quick_app_on_device(addr: &str, package_name: &str) -> anyhow::Result<()> {
     install::uninstall_quick_app(addr, package_name).await
 }
 
-pub async fn uninstall_watchface_on_device(
-    addr: &str,
-    watchface_id: &str,
-) -> anyhow::Result<()> {
+pub async fn uninstall_watchface_on_device(addr: &str, watchface_id: &str) -> anyhow::Result<()> {
     install::uninstall_watchface(addr, watchface_id).await
 }
 
-pub async fn set_watchface_on_device(
-    addr: &str,
-    watchface_id: &str,
-) -> anyhow::Result<()> {
+pub async fn set_watchface_on_device(addr: &str, watchface_id: &str) -> anyhow::Result<()> {
     install::set_watchface(addr, watchface_id).await
 }
 
-pub async fn launch_quick_app_on_device(
-    addr: &str,
-    package_name: &str,
-) -> anyhow::Result<()> {
+pub async fn launch_quick_app_on_device(addr: &str, package_name: &str) -> anyhow::Result<()> {
     install::launch_quick_app(addr, package_name).await
 }
 

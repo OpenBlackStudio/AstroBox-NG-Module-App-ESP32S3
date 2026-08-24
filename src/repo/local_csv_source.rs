@@ -61,11 +61,9 @@ pub async fn ensure_local_source(sd_root: &Path) -> Result<()> {
     let csv = csv_path(sd_root);
     match tokio::fs::metadata(&csv).await {
         Ok(_) => Ok(()),
-        Err(_) => {
-            tokio::fs::write(&csv, CSV_HEADER)
-                .await
-                .with_context(|| format!("init local csv {}", csv.display()))
-        }
+        Err(_) => tokio::fs::write(&csv, CSV_HEADER)
+            .await
+            .with_context(|| format!("init local csv {}", csv.display())),
     }
 }
 
@@ -180,8 +178,12 @@ pub async fn add_local_entry(
             .from_writer(Vec::<u8>::new());
         wtr.serialize(&row_clone)
             .map_err(|e| anyhow!("serialize local row: {e}"))?;
-        f.write_all(wtr.into_inner().map_err(|e| anyhow!("wtr into_inner: {e}"))?.as_slice())
-            .map_err(|e| anyhow!("write csv row: {e}"))?;
+        f.write_all(
+            wtr.into_inner()
+                .map_err(|e| anyhow!("wtr into_inner: {e}"))?
+                .as_slice(),
+        )
+        .map_err(|e| anyhow!("write csv row: {e}"))?;
         Ok(())
     })
     .await
@@ -257,10 +259,13 @@ pub async fn write_uploaded_bytes(
 
     let safe = sanitize_name(orig_name);
     let safe = if safe.is_empty() {
-        format!("upload_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs())
+        format!(
+            "upload_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        )
     } else {
         safe
     };
@@ -297,7 +302,11 @@ fn dedup_path(p: &Path) -> PathBuf {
         .and_then(|s| s.to_str())
         .unwrap_or("file")
         .to_string();
-    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("bin").to_string();
+    let ext = p
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bin")
+        .to_string();
     for i in 1..10_000 {
         let cand = parent.join(format!("{stem}-{i}.{ext}"));
         if !cand.exists() {
@@ -327,6 +336,9 @@ mod tests {
     fn dedup_handles_existing() {
         // 先造一个假存在路径（不真正读写文件），通过构造 path 对象检查格式
         let fake = std::path::PathBuf::from("/tmp/nonexistent_xyz/file.rpk");
-        assert_eq!(dedup_path(&fake).to_string_lossy(), "/tmp/nonexistent_xyz/file.rpk");
+        assert_eq!(
+            dedup_path(&fake).to_string_lossy(),
+            "/tmp/nonexistent_xyz/file.rpk"
+        );
     }
 }

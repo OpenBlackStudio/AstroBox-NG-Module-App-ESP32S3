@@ -1,5 +1,5 @@
 use esp_idf_svc::sys::{
-    nvs_commit, nvs_flash_init, nvs_get_str, nvs_open, nvs_set_str, nvs_close,
+    nvs_close, nvs_commit, nvs_flash_init, nvs_get_str, nvs_open, nvs_set_str,
     ESP_ERR_NVS_NOT_FOUND, ESP_OK,
 };
 use std::ffi::CString;
@@ -99,8 +99,7 @@ pub fn nvs_get_string_ns(namespace: &str, key: &str) -> Result<String, String> {
 
     let slice = &buf[..len as usize];
     let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-    String::from_utf8(slice[..end].to_vec())
-        .map_err(|e| format!("invalid UTF-8: {e}"))
+    String::from_utf8(slice[..end].to_vec()).map_err(|e| format!("invalid UTF-8: {e}"))
 }
 
 /// 在指定 namespace 下写字符串。namespace 不存在会自动创建。

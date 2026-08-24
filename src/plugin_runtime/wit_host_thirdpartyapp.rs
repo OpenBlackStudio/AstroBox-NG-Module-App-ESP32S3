@@ -27,11 +27,7 @@ pub async fn launch_quick_app(addr: &str, package_name: &str) -> Result<()> {
 ///
 /// 复用 `install::install_quick_app_from_file`（读文件 → BLE mass install）。
 /// `package_name` 由调用方提供（缺失时 install 侧会用文件名兜底）。
-pub async fn install_quick_app(
-    addr: &str,
-    package_name: &str,
-    file_path: &str,
-) -> Result<()> {
+pub async fn install_quick_app(addr: &str, package_name: &str, file_path: &str) -> Result<()> {
     crate::install::install_quick_app_from_file(addr, package_name, file_path).await
 }
 

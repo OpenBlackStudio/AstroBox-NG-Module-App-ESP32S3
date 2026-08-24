@@ -74,8 +74,8 @@ static REGISTRY: Mutex<Vec<LoadedPlugin>> = Mutex::new(Vec::new());
 /// 注：`AbpPackage::from_file` 用同步 `std::fs` 读 + 解压；`.abp` 通常 < 1 MB，
 /// 阻塞时间可接受。超大包（> 48 MB）会被 `from_bytes` 直接拒绝。
 pub async fn load(path: &Path) -> Result<String> {
-    let pkg = AbpPackage::from_file(path)
-        .with_context(|| format!("load abp {}", path.display()))?;
+    let pkg =
+        AbpPackage::from_file(path).with_context(|| format!("load abp {}", path.display()))?;
     let id = pkg.plugin_id();
     let name = pkg.manifest.name.clone();
     let version = pkg.manifest.version.clone();
@@ -88,10 +88,7 @@ pub async fn load(path: &Path) -> Result<String> {
 
     // 构造 host ctx：dialog.show-info 直接写 slint 顶部进度文本
     // （Phase 1 stub 在 LocalSet 单线程上同步执行，可直接调 slint setter）。
-    crate::gui::slint_ui::set_install_progress_text(format!(
-        "加载插件 {} v{}…",
-        name, version
-    ));
+    crate::gui::slint_ui::set_install_progress_text(format!("加载插件 {} v{}…", name, version));
     let mut host = FirmwareHostCtx;
 
     backend.call_on_load(&handle, &mut host)?;
@@ -164,7 +161,8 @@ mod tests {
             zip.start_file("manifest.json", opts).unwrap();
             zip.write_all(manifest.as_bytes()).unwrap();
             zip.start_file("t.wasm", opts).unwrap();
-            zip.write_all(&[0x00, 0x61, 0x73, 0x6d, 0, 0, 0, 0]).unwrap();
+            zip.write_all(&[0x00, 0x61, 0x73, 0x6d, 0, 0, 0, 0])
+                .unwrap();
             zip.finish().unwrap();
         }
         buf

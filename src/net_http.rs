@@ -49,8 +49,7 @@ fn blocking_http_post_once(
     headers: &[(&str, &str)],
     body: Option<&[u8]>,
 ) -> Result<(u16, Vec<u8>)> {
-    let (status, _cl, body) =
-        blocking_http_request_once(Method::Post, url, headers, body, true)?;
+    let (status, _cl, body) = blocking_http_request_once(Method::Post, url, headers, body, true)?;
     Ok((status, body))
 }
 
@@ -96,7 +95,9 @@ fn blocking_http_request_once(
     };
 
     let status = response.status();
-    let content_length = response.header("Content-Length").and_then(|v| v.parse::<u64>().ok());
+    let content_length = response
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok());
     if !require_body {
         return Ok((status, content_length, Vec::new()));
     }
@@ -150,7 +151,9 @@ fn blocking_http_download_once<P: AsRef<Path>, Cb: FnMut(usize, Option<usize>)>(
         .map_err(|e| anyhow!("submit request: {e:?}"))?;
 
     let status = response.status();
-    let cl = response.header("Content-Length").and_then(|v| v.parse::<usize>().ok());
+    let cl = response
+        .header("Content-Length")
+        .and_then(|v| v.parse::<usize>().ok());
 
     let mut f = OpenOptions::new()
         .create(true)
@@ -184,7 +187,9 @@ where
     T: Send + 'static,
 {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let builder = std::thread::Builder::new().name("http-blk".into()).stack_size(32 * 1024);
+    let builder = std::thread::Builder::new()
+        .name("http-blk".into())
+        .stack_size(32 * 1024);
     match builder.spawn(move || {
         let r = f();
         let _ = tx.send(r);
@@ -253,7 +258,10 @@ pub async fn post_form(
         .collect::<Vec<_>>()
         .join("&");
     let mut headers: Vec<(&str, String)> = Vec::with_capacity(extra_headers.len() + 1);
-    headers.push(("Content-Type", "application/x-www-form-urlencoded".to_string()));
+    headers.push((
+        "Content-Type",
+        "application/x-www-form-urlencoded".to_string(),
+    ));
     for (k, v) in extra_headers {
         headers.push((k, v.to_string()));
     }

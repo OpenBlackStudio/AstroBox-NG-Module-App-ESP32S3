@@ -22,20 +22,25 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Install esp toolchain (for rust-toolchain.toml targets)
+      - name: Check formatting (use stable toolchain)
         run: |
-          cargo install espup
-          espup install esp32s3
-          espup toolchain install esp32s3
-
-      - name: Check formatting
-        run: |
+          # Temporarily move rust-toolchain.toml to use stable toolchain
+          mv rust-toolchain.toml rust-toolchain.toml.bak
           rustup component add rustfmt
           cargo fmt -- --check 2>&1 || {
             echo "::error::Code formatting check failed"
             echo "Please run 'cargo fmt' to fix formatting"
+            mv rust-toolchain.toml.bak rust-toolchain.toml
             exit 1
           }
+          mv rust-toolchain.toml.bak rust-toolchain.toml
+
+      - name: Restore toolchain file
+        if: always()
+        run: |
+          if [ -f rust-toolchain.toml.bak ]; then
+            mv rust-toolchain.toml.bak rust-toolchain.toml
+          fi
 
   check-build:
     name: Check Build (Fast)
@@ -57,8 +62,7 @@ jobs:
           # Install espup (esp-rs toolchain manager)
           cargo install espup
           # Install ESP-IDF and all required Rust targets for esp32s3
-          espup install esp32s3
-          espup toolchain install esp32s3
+          espup install --targets esp32s3
 
       - name: Cache
         uses: actions/cache@v4
@@ -91,13 +95,10 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Install esp toolchain
+      - name: Run cargo audit (use stable toolchain)
         run: |
-          cargo install espup
-          espup install esp32s3
-          espup toolchain install esp32s3
-
-      - name: Run cargo audit
-        run: |
+          # Temporarily move rust-toolchain.toml to use stable toolchain
+          mv rust-toolchain.toml rust-toolchain.toml.bak
           cargo install cargo-audit
           cargo audit 2>&1 || echo "Security audit completed with warnings"
+          mv rust-toolchain.toml.bak rust-toolchain.toml

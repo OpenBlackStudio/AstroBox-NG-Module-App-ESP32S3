@@ -15,11 +15,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use esp_idf_svc::hal::{
-    gpio::{Gpio8, Gpio9, Gpio6, Gpio7, Output, PinDriver},
-    spi::{
-        config::DriverConfig, Dma, SpiConfig, SpiDeviceDriver, SpiDriver,
-        SPI2,
-    },
+    gpio::{Gpio6, Gpio7, Gpio8, Gpio9, Output, PinDriver},
+    spi::{config::DriverConfig, Dma, SpiConfig, SpiDeviceDriver, SpiDriver, SPI2},
 };
 use std::path::Path;
 
@@ -125,13 +122,9 @@ impl SdCard {
         // SDCARD_ROOT 是常量 "/sdcard\0"（我们用 as_ptr 传）。
         let root_c = std::ffi::CString::new(SDCARD_ROOT)
             .expect("SDCARD_ROOT constant contains no NUL in middle");
-        let ret = unsafe {
-            esp_idf_svc::sys::statvfs(root_c.as_ptr(), &mut stat as *mut _)
-        };
+        let ret = unsafe { esp_idf_svc::sys::statvfs(root_c.as_ptr(), &mut stat as *mut _) };
         if ret != 0 {
-            log::warn!(
-                "statvfs({SDCARD_ROOT}) failed with errno={ret}; returning 0 free bytes"
-            );
+            log::warn!("statvfs({SDCARD_ROOT}) failed with errno={ret}; returning 0 free bytes");
             return 0;
         }
         // f_bavail 是非 root 用户可写块数（FATFS 下和 bfree 基本一致）
@@ -150,10 +143,7 @@ impl SdCard {
     ///   接管该脚的硬件功能）；CS 被用来创建本 SD 卡的 `SpiDeviceDriver`。
     ///
     /// 失败请不要 panic，直接 `bail!`，上层捕获。
-    pub fn mount(
-        shared_spi_driver: &SpiDriver<'static>,
-        pins: SdCardPins,
-    ) -> Result<Self> {
+    pub fn mount(shared_spi_driver: &SpiDriver<'static>, pins: SdCardPins) -> Result<Self> {
         // ---- 1. 构造 SPI Device (SD 卡私有)：20 MHz，SPI mode 0 ----
         //
         // 注：`SpiDeviceDriver::new` 第二个参数是 CS pin（类型是
@@ -244,8 +234,8 @@ fn mount_fatfs_through_sdmmc() -> Result<()> {
         miso: unsafe { esp_idf_svc::hal::gpio::Gpio8::new() },
         cs: unsafe { esp_idf_svc::hal::gpio::Gpio9::new() },
     };
-    let sdmmc_driver = SdmmcSpiDriver::new(slot_cfg)
-        .map_err(|e| anyhow!("SdmmcSpiDriver init: {e:?}"))?;
+    let sdmmc_driver =
+        SdmmcSpiDriver::new(slot_cfg).map_err(|e| anyhow!("SdmmcSpiDriver init: {e:?}"))?;
     let card = SdCard::new(sdmmc_driver).map_err(|e| anyhow!("SdCard detect: {e:?}"))?;
     let _mounted_fatfs = Fatfs::new_sdcard(SDCARD_ROOT, card, 0 /* max_files */)
         .map_err(|e| anyhow!("Fatfs mount on {SDCARD_ROOT}: {e:?}"))?;

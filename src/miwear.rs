@@ -45,12 +45,8 @@ const SUPPORTED_DEVICE_KEYWORDS: &[&str] = &[
     "REDMI Watch 5",
 ];
 
-const SUPPORTED_GENERIC_KEYWORDS: &[&str] = &[
-    "Xiaomi Watch",
-    "Mi Band",
-    "Redmi Watch",
-    "REDMI Watch",
-];
+const SUPPORTED_GENERIC_KEYWORDS: &[&str] =
+    &["Xiaomi Watch", "Mi Band", "Redmi Watch", "REDMI Watch"];
 // Note: the standalone "Band" keyword was deliberately removed to avoid
 // matching non-Xiaomi devices (e.g. BT headsets, arm-band sensors) that
 // happen to contain "Band" in their advertising name (#16).
@@ -171,7 +167,10 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
 
                 tokio::time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
 
-                info!("Attempting to reconnect to {} ({})", session.name, session.addr);
+                info!(
+                    "Attempting to reconnect to {} ({})",
+                    session.name, session.addr
+                );
 
                 match connect_one_device(
                     &ble,
@@ -210,9 +209,7 @@ pub async fn connect_with_retry() -> anyhow::Result<()> {
     }
 }
 
-async fn scan_all_supported_devices(
-    ble: &BLEDevice,
-) -> anyhow::Result<Vec<(String, String)>> {
+async fn scan_all_supported_devices(ble: &BLEDevice) -> anyhow::Result<Vec<(String, String)>> {
     let mi_service = u16_uuid(0xFE95);
     let mut scan = BLEScan::new();
     scan.active_scan(true).interval(80).window(40);
@@ -220,9 +217,10 @@ async fn scan_all_supported_devices(
     // #13: use a HashMap keyed by MAC address inside the scan callback so
     // repeated advertising packets from the same device don't produce
     // duplicate entries. The outer Vec stores the deduped result.
-    let results = std::sync::Arc::new(std::sync::Mutex::new(
-        std::collections::HashMap::<String, String>::new(),
-    ));
+    let results = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        String,
+    >::new()));
     let results_ref = Arc::clone(&results);
 
     let mut discovered: Vec<(String, String)> = Vec::new();
@@ -307,11 +305,7 @@ async fn connect_one_device(
         let device_name = device_name.to_string();
         let pending = Arc::clone(&pending_disconnects);
         move |reason| {
-            log::warn!(
-                "BLE disconnected from {} (reason: {})",
-                device_name,
-                reason
-            );
+            log::warn!("BLE disconnected from {} (reason: {})", device_name, reason);
             // #14: de-duplicate disconnect events per MAC before pushing to
             // the channel; NimBLE can fire multiple on_disconnect callbacks
             // for a single teardown (e.g. timeout + explicit close).
@@ -330,7 +324,11 @@ async fn connect_one_device(
 
     info!("Connecting to {} ({})...", device_name, addr);
     client.connect(addr).await?;
-    info!("Connected to {} (connected={})", device_name, client.connected());
+    info!(
+        "Connected to {} (connected={})",
+        device_name,
+        client.connected()
+    );
 
     let svc = client
         .get_service(mi_service)
@@ -383,12 +381,11 @@ async fn connect_one_device(
         }
     }
 
-    let mut ch_service_flag = ch_service_flag
-        .ok_or_else(|| anyhow::anyhow!("0x0050 not found on {}", device_name))?;
-    let mut ch_recv = ch_recv
-        .ok_or_else(|| anyhow::anyhow!("0x005e not found on {}", device_name))?;
-    let ch_sent = ch_sent
-        .ok_or_else(|| anyhow::anyhow!("0x005f not found on {}", device_name))?;
+    let mut ch_service_flag =
+        ch_service_flag.ok_or_else(|| anyhow::anyhow!("0x0050 not found on {}", device_name))?;
+    let mut ch_recv =
+        ch_recv.ok_or_else(|| anyhow::anyhow!("0x005e not found on {}", device_name))?;
+    let ch_sent = ch_sent.ok_or_else(|| anyhow::anyhow!("0x005f not found on {}", device_name))?;
 
     if ch_service_flag.can_read() {
         if let Ok(v) = ch_service_flag.read_value().await {

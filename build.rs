@@ -87,9 +87,9 @@ fn secs_to_ymdhms(mut secs: i64) -> (i32, u32, u32, u32, u32, u32) {
         }
     }
     let md: [u32; 12] = if is_leap(year) {
-        [31,29,31,30,31,30,31,31,30,31,30,31]
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     } else {
-        [31,28,31,30,31,30,31,31,30,31,30,31]
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     };
     let mut month: u32 = 1;
     for m in md.iter() {
@@ -104,7 +104,11 @@ fn secs_to_ymdhms(mut secs: i64) -> (i32, u32, u32, u32, u32, u32) {
     (year, month, days as u32 + 1, h, mi, s)
 }
 const fn is_leap(y: i32) -> bool {
-    if y % 4 != 0 { return false; }
-    if y % 100 != 0 { return true; }
+    if y % 4 != 0 {
+        return false;
+    }
+    if y % 100 != 0 {
+        return true;
+    }
     y % 400 == 0
 }

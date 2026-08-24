@@ -47,9 +47,7 @@ fn now_iso_utc() -> String {
             // 无 `chrono` 环境：使用自定义格式化器（YYYYMMDD + HH:MM:SS）。
             // 算法：按 POSIX gmtime 规则。
             let (y, mo, d, h, mi, s) = gmtime_y_m_d_h_m_s(secs as i64);
-            format!(
-                "{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z"
-            )
+            format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
         }
         Err(_) => format!("epoch-{}", unsafe {
             esp_idf_svc::sys::esp_timer_get_time() / 1_000_000
@@ -125,9 +123,8 @@ unsafe impl Sync for FileLogger {}
 
 impl FileLogger {
     pub fn new(log_dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&log_dir).with_context(|| {
-            format!("create log dir {}", log_dir.display())
-        })?;
+        std::fs::create_dir_all(&log_dir)
+            .with_context(|| format!("create log dir {}", log_dir.display()))?;
         let me = Self {
             dir: log_dir,
             fail_counter: Cell::new(0),
@@ -145,16 +142,13 @@ impl FileLogger {
     fn current_path(&self) -> PathBuf {
         let ds = date_stamp_for_filename();
         let idx = self.current_file_index.get();
-        self.dir.join(format!(
-            "astrobox_{ds}_{idx:04}.log"
-        ))
+        self.dir.join(format!("astrobox_{ds}_{idx:04}.log"))
     }
 
     fn rotate(&self) -> Result<()> {
         // SAFETY: writer 仅在 rotate / write / flush 中被独占访问，
         // log crate 默认对 Log 的调用是全局串行，因此 unsafe 等价于 borrow_mut。
-        let writer_slot: &mut Option<BufWriter<File>> =
-            unsafe { &mut *self.writer.get() };
+        let writer_slot: &mut Option<BufWriter<File>> = unsafe { &mut *self.writer.get() };
 
         // 先 flush + drop 旧 writer
         if let Some(mut w) = writer_slot.take() {
@@ -226,10 +220,7 @@ impl FileLogger {
             let too_big = total > MAX_TOTAL_LOG_BYTES;
             if too_old || too_big {
                 if let Err(e) = std::fs::remove_file(&p) {
-                    log::warn!(
-                        "failed to purge stale log {}: {e}",
-                        p.display()
-                    );
+                    log::warn!("failed to purge stale log {}: {e}", p.display());
                 } else {
                     total = total.saturating_sub(size);
                 }
@@ -246,8 +237,11 @@ impl FileLogger {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "writer closed"))?;
         w.write_all(line.as_bytes())?;
         w.write_all(b"\n")?;
-        self.current_file_size
-            .set(self.current_file_size.get().saturating_add(line.len() as u64 + 1));
+        self.current_file_size.set(
+            self.current_file_size
+                .get()
+                .saturating_add(line.len() as u64 + 1),
+        );
         if self.current_file_size.get() >= MAX_SINGLE_LOG_BYTES {
             let _ = w.flush();
             drop(writer_slot.take());
@@ -325,7 +319,11 @@ impl EspLoggerBackend {
         // EspLogger 默认安装后自动输出到 USB/UART；这里不做额外操作，
         // 因为 `log::logger()` 会在 combined logger 内部分发。
         // 但为避免循环，我们直接走 esp-idf 的 `esp_log_write` 底层。
-        use esp_idf_svc::sys::{esp_log_level_t_ESP_LOG_DEBUG, esp_log_level_t_ESP_LOG_ERROR, esp_log_level_t_ESP_LOG_INFO, esp_log_level_t_ESP_LOG_NONE, esp_log_level_t_ESP_LOG_WARN, esp_log_write};
+        use esp_idf_svc::sys::{
+            esp_log_level_t_ESP_LOG_DEBUG, esp_log_level_t_ESP_LOG_ERROR,
+            esp_log_level_t_ESP_LOG_INFO, esp_log_level_t_ESP_LOG_NONE,
+            esp_log_level_t_ESP_LOG_WARN, esp_log_write,
+        };
         use std::ffi::CString;
         let level = match record.level() {
             log::Level::Error => esp_log_level_t_ESP_LOG_ERROR,
@@ -425,9 +423,6 @@ mod tests {
         // 1970‑01‑01 00:00:00
         assert_eq!(gmtime_y_m_d_h_m_s(0), (1970, 1, 1, 0, 0, 0));
         // 2024‑01‑01 00:00:00
-        assert_eq!(
-            gmtime_y_m_d_h_m_s(1_704_067_200),
-            (2024, 1, 1, 0, 0, 0)
-        );
+        assert_eq!(gmtime_y_m_d_h_m_s(1_704_067_200), (2024, 1, 1, 0, 0, 0));
     }
 }

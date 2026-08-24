@@ -73,8 +73,7 @@ pub struct AbpPackage {
 impl AbpPackage {
     /// 从磁盘路径加载并解包一个 `.abp`。
     pub fn from_file(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("read abp {}", path.display()))?;
+        let bytes = std::fs::read(path).with_context(|| format!("read abp {}", path.display()))?;
         Self::from_bytes(&bytes)
     }
 
@@ -93,8 +92,7 @@ impl AbpPackage {
         // 1. 读 manifest.json（必需）
         let manifest_bytes = read_zip_entry(&mut zip, "manifest.json")
             .map_err(|e| anyhow!("manifest.json missing: {e}"))?;
-        let manifest_str = String::from_utf8(manifest_bytes)
-            .context("manifest.json not utf-8")?;
+        let manifest_str = String::from_utf8(manifest_bytes).context("manifest.json not utf-8")?;
         let manifest: Manifest = serde_json::from_str(&manifest_str)
             .with_context(|| format!("parse manifest.json: {manifest_str}"))?;
 
@@ -205,8 +203,8 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let opts =
-                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("manifest.json", opts).unwrap();
             zip.write_all(manifest.as_bytes()).unwrap();
             // 最小 wasm：魔数 + version=0
@@ -235,16 +233,18 @@ mod tests {
 
     #[test]
     fn loads_icon_when_manifest_references_it() {
-        let manifest = r#"{"name":"WithIcon","version":"0.2.0","entry":"e.wasm","icon":"icon.png"}"#;
+        let manifest =
+            r#"{"name":"WithIcon","version":"0.2.0","entry":"e.wasm","icon":"icon.png"}"#;
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let opts =
-                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("manifest.json", opts).unwrap();
             zip.write_all(manifest.as_bytes()).unwrap();
             zip.start_file("e.wasm", opts).unwrap();
-            zip.write_all(&[0x00, 0x61, 0x73, 0x6d, 0, 0, 0, 0]).unwrap();
+            zip.write_all(&[0x00, 0x61, 0x73, 0x6d, 0, 0, 0, 0])
+                .unwrap();
             zip.start_file("icon.png", opts).unwrap();
             zip.write_all(b"PNGDATA").unwrap();
             zip.finish().unwrap();
@@ -260,8 +260,8 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let opts =
-                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("manifest.json", opts).unwrap();
             zip.write_all(manifest.as_bytes()).unwrap();
             zip.start_file("e.wasm", opts).unwrap();
@@ -276,10 +276,11 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let opts =
-                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("e.wasm", opts).unwrap();
-            zip.write_all(&[0x00, 0x61, 0x73, 0x6d, 0, 0, 0, 0]).unwrap();
+            zip.write_all(&[0x00, 0x61, 0x73, 0x6d, 0, 0, 0, 0])
+                .unwrap();
             zip.finish().unwrap();
         }
         assert!(AbpPackage::from_bytes(&buf).is_err());

@@ -1,9 +1,7 @@
 use corelib::{
     device::xiaomi::{
         components::{
-            mass::{
-                MassComponent, MassSystem, SendMassCallbackData,
-            },
+            mass::{MassComponent, MassSystem, SendMassCallbackData},
             resource::ResourceComponent,
             thirdparty_app::{AppInfo, ThirdpartyAppComponent, ThirdpartyAppSystem},
         },
@@ -92,8 +90,7 @@ where
 {
     let addr_owned = addr.to_string();
     let (tx, rx) = oneshot::channel();
-    let cb_arc: Arc<dyn Fn(SendMassCallbackData) + Send + Sync> =
-        Arc::new(progress_cb);
+    let cb_arc: Arc<dyn Fn(SendMassCallbackData) + Send + Sync> = Arc::new(progress_cb);
 
     ecs::with_rt_mut(move |rt| {
         rt.with_device_mut(&addr_owned, |world, entity| {
@@ -115,9 +112,7 @@ where
                 }
             };
             let cb = cb_arc.clone();
-            let result = system
-                .send_file(data, data_type, move |d| cb(d))
-                .await;
+            let result = system.send_file(data, data_type, move |d| cb(d)).await;
             let _ = tx.send(result.map(|_| ()));
         });
     })
@@ -202,10 +197,7 @@ pub async fn relay_interconnect_message(
     let src = src_addr.to_string();
     let dst = dst_addr.to_string();
 
-    info!(
-        "[Transfer] Starting interconnect relay: {} → {}",
-        src, dst
-    );
+    info!("[Transfer] Starting interconnect relay: {} → {}", src, dst);
 
     let mut subscriber = events::subscribe();
 
@@ -261,10 +253,7 @@ pub async fn relay_interconnect_message(
                 }
                 events::CoreEvent::DeviceStateChanged(state) => {
                     if state.device_addr == dst {
-                        info!(
-                            "[Transfer] Target device {} state changed",
-                            dst
-                        );
+                        info!("[Transfer] Target device {} state changed", dst);
                     }
                 }
             }
@@ -328,7 +317,8 @@ pub async fn transfer_quick_app_between_devices(
                 None => {
                     let _ = list_tx.send(Err(anyhow::anyhow!(
                         "App {} not found on source {}",
-                        pkg_owned, src_owned
+                        pkg_owned,
+                        src_owned
                     )));
                 }
             }
@@ -345,10 +335,7 @@ pub async fn transfer_quick_app_between_devices(
     let payload_size = app_item.data.as_ref().map(|d| d.len()).unwrap_or(0);
     info!(
         "[Transfer] Found app {} ({} bytes) on {}, now installing on {}",
-        package_name,
-        payload_size,
-        src_addr,
-        dst_addr
+        package_name, payload_size, src_addr, dst_addr
     );
 
     crate::install::install_quick_app(
@@ -381,7 +368,10 @@ pub async fn transfer_watchface_between_devices(
 
     ecs::with_rt_mut(move |rt| {
         rt.with_device_mut(&src_owned, |world, entity| {
-            let component = match world.get::<corelib::device::xiaomi::components::resource::ResourceComponent>(entity) {
+            let component = match world
+                .get::<corelib::device::xiaomi::components::resource::ResourceComponent>(
+                entity,
+            ) {
                 Some(c) => c,
                 None => {
                     let _ = tx.send(Err(anyhow::anyhow!(
@@ -403,7 +393,8 @@ pub async fn transfer_watchface_between_devices(
                 None => {
                     let _ = tx.send(Err(anyhow::anyhow!(
                         "Watchface {} not found on source {}",
-                        id_owned, src_owned
+                        id_owned,
+                        src_owned
                     )));
                 }
             }
@@ -431,10 +422,7 @@ pub async fn broadcast_data_to_all_devices(
     data_type: MassDataType,
     data: Vec<u8>,
 ) -> anyhow::Result<Vec<(String, anyhow::Result<()>)>> {
-    let device_ids = ecs::with_rt_mut(|rt| {
-        rt.device_ids().cloned().collect::<Vec<_>>()
-    })
-    .await;
+    let device_ids = ecs::with_rt_mut(|rt| rt.device_ids().cloned().collect::<Vec<_>>()).await;
 
     if device_ids.is_empty() {
         return Ok(vec![]);

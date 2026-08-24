@@ -30,9 +30,7 @@ use crate::{
 /// duplication and centralises error surface.
 pub(crate) async fn with_device_async<F, T>(addr: &str, f: F) -> anyhow::Result<T>
 where
-    F: FnOnce(&mut corelib::ecs::World, corelib::ecs::Entity) -> anyhow::Result<T>
-        + Send
-        + 'static,
+    F: FnOnce(&mut corelib::ecs::World, corelib::ecs::Entity) -> anyhow::Result<T> + Send + 'static,
     T: Send + 'static,
 {
     let addr_owned = addr.to_string();
@@ -63,12 +61,7 @@ pub(crate) async fn resolve_app_info(addr: &str, package_name: &str) -> anyhow::
                 package_name: item.package_name.clone(),
                 fingerprint: item.fingerprint.clone(),
             })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "App {} not found in installed list",
-                    pkg_owned
-                )
-            })
+            .ok_or_else(|| anyhow::anyhow!("App {} not found in installed list", pkg_owned))
     })
     .await
 }
@@ -146,7 +139,10 @@ pub async fn install_quick_app(
 
     future.await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    info!("Quick app {} installed successfully on {}", package_name, addr);
+    info!(
+        "Quick app {} installed successfully on {}",
+        package_name, addr
+    );
     Ok(())
 }
 
@@ -160,11 +156,7 @@ pub async fn install_quick_app_from_file(
 }
 
 pub async fn install_watchface(addr: &str, face_data: Vec<u8>) -> anyhow::Result<()> {
-    info!(
-        "Installing watchface ({}) on {}...",
-        face_data.len(),
-        addr
-    );
+    info!("Installing watchface ({}) on {}...", face_data.len(), addr);
 
     let future = with_device_async(addr, move |world, entity| {
         if world.get::<InstallComponent>(entity).is_none() {
@@ -185,10 +177,7 @@ pub async fn install_watchface(addr: &str, face_data: Vec<u8>) -> anyhow::Result
     Ok(())
 }
 
-pub async fn install_watchface_from_file(
-    addr: &str,
-    file_path: &str,
-) -> anyhow::Result<()> {
+pub async fn install_watchface_from_file(addr: &str, file_path: &str) -> anyhow::Result<()> {
     let data = fs::read(Path::new(file_path)).await?;
     install_watchface(addr, data).await
 }
@@ -459,7 +448,12 @@ pub async fn install_from_repo(
             let pkg = manifest
                 .package_name
                 .clone()
-                .or_else(|| item.manifest_path.rsplit('/').next().map(|s| s.trim_end_matches(".json").to_string()))
+                .or_else(|| {
+                    item.manifest_path
+                        .rsplit('/')
+                        .next()
+                        .map(|s| s.trim_end_matches(".json").to_string())
+                })
                 .unwrap_or_else(|| slugify(&item.name));
             install_quick_app(addr, &pkg, local_bytes).await?;
         }

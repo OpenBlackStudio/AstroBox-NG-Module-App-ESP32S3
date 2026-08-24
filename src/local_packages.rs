@@ -88,7 +88,10 @@ pub async fn scan_packages(root: Option<&Path>) -> Result<Vec<LocalPackage>> {
         let Some(ext) = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|s| s.to_string()) else { continue };
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
         let Some(kind) = classify(&ext) else { continue };
 
         let name = path
@@ -110,8 +113,7 @@ pub async fn scan_packages(root: Option<&Path>) -> Result<Vec<LocalPackage>> {
             guessed_pkg_name: None,
         };
         if lp.r#type == LocalType::QuickApp {
-            lp.guessed_pkg_name =
-                try_extract_rpk_package_name(&lp.path).await.ok();
+            lp.guessed_pkg_name = try_extract_rpk_package_name(&lp.path).await.ok();
         }
         out.push(lp);
     }
@@ -147,13 +149,17 @@ async fn try_extract_rpk_package_name(path: &Path) -> Result<String> {
     // 优先抓 JSON 字段：
     //   "package": "com.xxx" 或 "packageName":"com.xxx"
     for needle in ["\"package\"", "\"packageName\""] {
-        let Some(pos) = hay.find(needle) else { continue };
+        let Some(pos) = hay.find(needle) else {
+            continue;
+        };
         let tail = &hay[pos + needle.len()..];
         // 跳过空白 / ':' / 空白
         let tail = tail.trim_start_matches(|c: char| c.is_whitespace() || c == ':');
         let tail = tail.trim_start();
         // 下一个字符应是 "
-        let Some(tail) = tail.strip_prefix('"') else { continue };
+        let Some(tail) = tail.strip_prefix('"') else {
+            continue;
+        };
         let Some(end) = tail.find('"') else { continue };
         let pkg = &tail[..end];
         if !pkg.is_empty() && pkg.len() <= 128 {
@@ -190,15 +196,28 @@ pub async fn classify_dir_path(
         .and_then(|s| s.to_str())
         .unwrap_or("upload")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(64)
         .collect::<String>();
-    let ext = if ext.is_empty() { "bin".to_string() } else { ext.to_lowercase() };
+    let ext = if ext.is_empty() {
+        "bin".to_string()
+    } else {
+        ext.to_lowercase()
+    };
     let mut target = base.join(format!("{stem}.{ext}"));
     if target.exists() {
         for i in 1..10_000 {
             let cand = base.join(format!("{stem}-{i}.{ext}"));
-            if !cand.exists() { target = cand; break; }
+            if !cand.exists() {
+                target = cand;
+                break;
+            }
         }
     }
     tokio::fs::write(&target, bytes)
@@ -298,26 +317,26 @@ pub async fn install_local(
             // 我们走 `install.rs` 中的 `MassDataType`（由它保证一致）。
             // 这里提供 fallback：如果 send_resource API 不可用，就返回
             // 一个明确的错误让用户知道。
-            Err(anyhow!(
-                ".bin 资源安装暂未开放，请改为快应用/表盘扩展名"
-            ))
+            Err(anyhow!(".bin 资源安装暂未开放，请改为快应用/表盘扩展名"))
         }
         // Plugin 在函数开头已提前 return，逻辑上不可达。
         LocalType::Plugin => unreachable!("plugin install handled earlier"),
     };
 
     match &res {
-        Ok(()) => emit_progress(
-            progress_tx.as_ref(),
-            TransferProgress {
-                direction: TransferDirection::Send,
-                progress_percent: 100.0,
-                current_bytes: lp.size as usize,
-                total_bytes: total,
-                file_name: name,
-            },
-        )
-        .await,
+        Ok(()) => {
+            emit_progress(
+                progress_tx.as_ref(),
+                TransferProgress {
+                    direction: TransferDirection::Send,
+                    progress_percent: 100.0,
+                    current_bytes: lp.size as usize,
+                    total_bytes: total,
+                    file_name: name,
+                },
+            )
+            .await
+        }
         Err(e) => {
             log::error!("install_local({}) failed: {e:#}", lp.path.display());
         }
