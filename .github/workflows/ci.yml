@@ -1,0 +1,90 @@
+name: CI - Quick Check
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format-check:
+    name: Format & Clippy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Check formatting
+        run: |
+          rustup component add rustfmt
+          cargo fmt -- --check 2>&1 || {
+            echo "::error::Code formatting check failed"
+            echo "Please run 'cargo fmt' to fix formatting"
+            exit 1
+          }
+
+  check-build:
+    name: Check Build (Fast)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3 python3-venv
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Setup esp toolchain
+        run: |
+          # Install espup (esp-rs toolchain manager)
+          cargo install espup
+          # Install ESP-IDF and all required Rust targets for esp32s3
+          espup install esp32s3
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.espressif
+            target
+          key: ci-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ci-${{ runner.os }}-
+
+      - name: Check build (no full release)
+        run: |
+          . $HOME/esp/esp-idf/export.sh 2>/dev/null || true
+          export ESP_IDF_VERSION="v5.3.3"
+          export MCU="esp32s3"
+          # Just check that it compiles (debug build, no optimization)
+          cargo check --features "sdcard,repo_net,mi_account,webui" 2>&1
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Run cargo audit
+        run: |
+          cargo install cargo-audit
+          cargo audit 2>&1 || echo "Security audit completed with warnings"

@@ -1,0 +1,75 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      esp-idf:
+        patterns:
+          - "esp-idf*"
+          - "esp32-nimble"
+          - "espflash"
+          - "ldproxy"
+          - "embuild"
+      embedded:
+        patterns:
+          - "embedded-*"
+          - "mipidsi"
+          - "display-interface*"
+      ui:
+        patterns:
+          - "slint*"
+          - "cst816s"
+          - "image"
+          - "resvg"
+      crypto:
+        patterns:
+          - "md-5"
+          - "hmac"
+          - "sha1"
+          - "sha2"
+          - "base64"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 2
+    labels:
+      - "security"
+    commit-message:
+      prefix: "fix"
+      prefix-development: "fix"
+      include: "scope"
+    versioning-strategy: "increase"
+    ignore:
+      - dependency-name: "esp-idf-svc"
+        reason: "ESP-IDF v5.3.x requires specific esp-idf-svc version"
+      - dependency-name: "embedded-svc"
+        reason: "Must match esp-idf-svc version"
