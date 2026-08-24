@@ -63,8 +63,14 @@ jobs:
           mv rust-toolchain.toml rust-toolchain.toml.bak
           # Install espup (esp-rs toolchain manager)
           cargo install espup
-          # Install ESP-IDF and all required Rust targets for esp32s3
-          espup install --targets esp32s3
+          # Retry espup install to handle transient network issues
+          for i in 1 2 3; do
+            if espup install --targets esp32s3; then
+              break
+            fi
+            echo "espup install attempt $i failed, retrying..."
+            sleep 10
+          done
           # Restore toolchain file now that esp toolchain is installed
           mv rust-toolchain.toml.bak rust-toolchain.toml
 

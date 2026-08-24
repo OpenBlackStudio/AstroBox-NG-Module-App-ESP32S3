@@ -80,7 +80,14 @@ jobs:
           # Temporarily move rust-toolchain.toml to avoid resolution issues
           mv rust-toolchain.toml rust-toolchain.toml.bak
           cargo install espup
-          espup install --targets esp32s3
+          # Retry espup install to handle transient network issues
+          for i in 1 2 3; do
+            if espup install --targets esp32s3; then
+              break
+            fi
+            echo "espup install attempt $i failed, retrying..."
+            sleep 10
+          done
           # Install espflash for image generation
           cargo install espflash
           # Restore toolchain file
@@ -230,7 +237,14 @@ jobs:
           # Temporarily move rust-toolchain.toml to avoid resolution issues
           mv rust-toolchain.toml rust-toolchain.toml.bak
           cargo install espup
-          espup install --targets esp32s3
+          # Retry espup install to handle transient network issues
+          for i in 1 2 3; do
+            if espup install --targets esp32s3; then
+              break
+            fi
+            echo "espup install attempt $i failed, retrying..."
+            sleep 10
+          done
           mv rust-toolchain.toml.bak rust-toolchain.toml
 
       - name: Cache
@@ -274,7 +288,14 @@ jobs:
           # Temporarily move rust-toolchain.toml to avoid resolution issues
           mv rust-toolchain.toml rust-toolchain.toml.bak
           cargo install espup
-          espup install --targets esp32s3
+          # Retry espup install to handle transient network issues
+          for i in 1 2 3; do
+            if espup install --targets esp32s3; then
+              break
+            fi
+            echo "espup install attempt $i failed, retrying..."
+            sleep 10
+          done
           mv rust-toolchain.toml.bak rust-toolchain.toml
 
       - name: Cache
