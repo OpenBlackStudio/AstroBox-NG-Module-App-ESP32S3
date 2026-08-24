@@ -9,9 +9,12 @@ use std::sync::Once;
 const NVS_NAMESPACE: &str = "wifi_cfg";
 const SSID_KEY: &str = "ssid";
 const PASSWORD_KEY: &str = "password";
-const MAX_STR_SIZE: usize = 65;
 const NVS_READWRITE: u32 = 0x00000002;
 const NVS_READONLY: u32 = 0x00000001;
+
+/// 通用 namespace 下的最大字符串长度。小米账号 session JSON 可能 > 65B，
+/// 因此独立常量放宽到 2 KB。
+const MAX_STR_SIZE_GENERIC: usize = 2048;
 
 static NVS_INIT: Once = Once::new();
 static NVS_INIT_OK: AtomicBool = AtomicBool::new(false);
@@ -58,26 +61,33 @@ pub fn save_wifi_credentials(ssid: &str, password: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn nvs_get_string(key: &str) -> Result<String, String> {
+// =====================================================================
+// 通用 namespace 字符串存取（步骤 4：mi_account session JSON 持久化）
+// =====================================================================
+
+/// 在指定 namespace 下读字符串。不存在或读失败返回 Err。
+/// 用于步骤 4 把 `MiAccountSession` 序列化为 JSON 后存到独立 namespace
+/// (`mi_account`)，避免和 Wi-Fi 凭据混在 `wifi_cfg` 里。
+///
+/// 内部缓冲区使用 `MAX_STR_SIZE_GENERIC` (2 KB)，足够装 session JSON。
+pub fn nvs_get_string_ns(namespace: &str, key: &str) -> Result<String, String> {
     if !ensure_nvs_initialized() {
         return Err("NVS not initialized".to_string());
     }
 
     let c_key = CString::new(key).map_err(|e| e.to_string())?;
-    let c_ns = CString::new(NVS_NAMESPACE).map_err(|e| e.to_string())?;
+    let c_ns = CString::new(namespace).map_err(|e| e.to_string())?;
 
     let mut handle: esp_idf_svc::sys::nvs_handle_t = 0;
     // SAFETY: nvs_open returns a handle that must be closed after use.
-    // The handle is only used within this function scope.
     let ret = unsafe { nvs_open(c_ns.as_ptr(), NVS_READONLY, &mut handle) };
     if ret != ESP_OK {
         return Err(format!("nvs_open failed: {ret}"));
     }
 
-    let mut buf = vec![0u8; MAX_STR_SIZE];
+    let mut buf = vec![0u8; MAX_STR_SIZE_GENERIC];
     let mut len = buf.len() as u32;
-    // SAFETY: buf is a valid mutable slice of MAX_STR_SIZE bytes,
-    // len is properly initialized to buf.len().
+    // SAFETY: buf 是有效可变 slice，len 初始化为 buf.len()。
     let ret = unsafe { nvs_get_str(handle, c_key.as_ptr(), buf.as_mut_ptr(), &mut len) };
 
     // SAFETY: handle was opened above and must be closed.
@@ -93,14 +103,15 @@ fn nvs_get_string(key: &str) -> Result<String, String> {
         .map_err(|e| format!("invalid UTF-8: {e}"))
 }
 
-fn nvs_set_string(key: &str, value: &str) -> Result<(), String> {
+/// 在指定 namespace 下写字符串。namespace 不存在会自动创建。
+pub fn nvs_set_string_ns(namespace: &str, key: &str, value: &str) -> Result<(), String> {
     if !ensure_nvs_initialized() {
         return Err("NVS not initialized".to_string());
     }
 
     let c_key = CString::new(key).map_err(|e| e.to_string())?;
     let c_value = CString::new(value).map_err(|e| e.to_string())?;
-    let c_ns = CString::new(NVS_NAMESPACE).map_err(|e| e.to_string())?;
+    let c_ns = CString::new(namespace).map_err(|e| e.to_string())?;
 
     let mut handle: esp_idf_svc::sys::nvs_handle_t = 0;
     // SAFETY: nvs_open returns a handle that must be closed after use.
@@ -128,4 +139,40 @@ fn nvs_set_string(key: &str, value: &str) -> Result<(), String> {
     // SAFETY: handle was opened above, closing it to release resources.
     unsafe { nvs_close(handle) };
     Ok(())
+}
+
+/// 删除指定 namespace 下的 key。不存在不算错误（返回 Ok）。
+pub fn nvs_delete_string_ns(namespace: &str, key: &str) -> Result<(), String> {
+    if !ensure_nvs_initialized() {
+        return Err("NVS not initialized".to_string());
+    }
+    let c_key = CString::new(key).map_err(|e| e.to_string())?;
+    let c_ns = CString::new(namespace).map_err(|e| e.to_string())?;
+
+    let mut handle: esp_idf_svc::sys::nvs_handle_t = 0;
+    let ret = unsafe { nvs_open(c_ns.as_ptr(), NVS_READWRITE, &mut handle) };
+    if ret != ESP_OK {
+        return Err(format!("nvs_open failed: {ret}"));
+    }
+
+    // SAFETY: 删除不存在 key 时 esp-idf 返回 ESP_ERR_NVS_NOT_FOUND，按 OK 处理。
+    let ret = unsafe { esp_idf_svc::sys::nvs_erase_key(handle, c_key.as_ptr()) };
+    if ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND {
+        unsafe { nvs_close(handle) };
+        return Err(format!("nvs_erase_key failed: {ret}"));
+    }
+    let ret = unsafe { nvs_commit(handle) };
+    unsafe { nvs_close(handle) };
+    if ret != ESP_OK {
+        return Err(format!("nvs_commit failed: {ret}"));
+    }
+    Ok(())
+}
+
+fn nvs_get_string(key: &str) -> Result<String, String> {
+    nvs_get_string_ns(NVS_NAMESPACE, key)
+}
+
+fn nvs_set_string(key: &str, value: &str) -> Result<(), String> {
+    nvs_set_string_ns(NVS_NAMESPACE, key, value)
 }

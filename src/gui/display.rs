@@ -1,13 +1,22 @@
+//! LCD (ST7789, 240×320) 显示初始化。
+//!
+//! 注意：为了让 LCD 和 SD 卡能在同一根 SPI2 总线上通过不同 CS
+//! 共存，本文件不再内部创建 `SpiDriver`，而是接受上层（main.rs）
+//! 已经构造好的 `&SpiDriver<'static>`，再基于 LCD CS (GPIO5)
+//! 创建 `SpiDeviceDriver`。
+//!
+//! 对应验收标准：**AC13**（SPI 互斥并发安全）。
+
 use anyhow::{anyhow, Result};
 use esp_idf_svc::hal::{
     delay::Delay,
-    gpio::{Gpio2, Gpio3, Gpio4, Gpio5, Gpio6, Gpio7, PinDriver},
+    gpio::{Gpio2, Gpio3, Gpio4, Gpio5, PinDriver},
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver, LEDC},
-    spi::{config::DriverConfig, Dma, SpiConfig, SpiDeviceDriver, SpiDriver, SPI2},
+    spi::{SpiConfig, SpiDeviceDriver, SpiDriver},
 };
 use mipidsi::{
     interface::SpiInterface,
-    models::GC9A01,
+    models::ST7789,
     options::{ColorInversion, ColorOrder, Orientation, RefreshOrder},
     Builder,
 };
@@ -15,7 +24,7 @@ use mipidsi::{
 type DisplayDcPin<'d> = PinDriver<'d, Gpio4, esp_idf_svc::hal::gpio::Output>;
 type DisplayRstPin<'d> = PinDriver<'d, Gpio3, esp_idf_svc::hal::gpio::Output>;
 type DisplayInterface<'d> = SpiInterface<'d, SpiDeviceDriver<'d, SpiDriver<'d>>, DisplayDcPin<'d>>;
-pub type DisplayType<'d> = mipidsi::Display<DisplayInterface<'d>, GC9A01, DisplayRstPin<'d>>;
+pub type DisplayType<'d> = mipidsi::Display<DisplayInterface<'d>, ST7789, DisplayRstPin<'d>>;
 
 const DISPLAY_SPI_BUFFER_SIZE: usize = 1024;
 // SAFETY: This buffer is accessed only from the display initialization function
@@ -30,12 +39,14 @@ pub struct DisplayPins {
     pub rst: Gpio3,
     pub dc: Gpio4,
     pub cs: Gpio5,
-    pub mosi: Gpio6,
-    pub sclk: Gpio7,
 }
 
-pub fn init_display_gc9a01(
-    spi2: SPI2,
+/// 构造 LCD SPI 设备（40 MHz）并初始化 ST7789 芯片。
+///
+/// `shared_spi_bus` 来自 `sdcard::new_spi2_bus_driver`（SCLK=GPIO7,
+/// MOSI=GPIO6, MISO=GPIO8）。本函数只用 LCD CS=GPIO5 创建 device。
+pub fn init_display_st7789(
+    shared_spi_bus: &SpiDriver<'static>,
     ledc: LEDC,
     pins: DisplayPins,
 ) -> Result<(DisplayType<'static>, LedcDriver<'static>)> {
@@ -44,8 +55,6 @@ pub fn init_display_gc9a01(
         rst,
         dc,
         cs,
-        mosi,
-        sclk,
     } = pins;
     let LEDC {
         timer0, channel0, ..
@@ -58,19 +67,10 @@ pub fn init_display_gc9a01(
     let mut backlight = LedcDriver::new(channel0, ledc_timer, backlight)?;
     backlight.set_duty(backlight.get_max_duty() / 2)?;
 
-    let spi_driver = SpiDriver::new(
-        spi2,
-        sclk, // SCLK
-        mosi, // MOSI (SDO)
-        Option::<esp_idf_svc::hal::gpio::Gpio8>::None,
-        &DriverConfig {
-            dma: Dma::Auto(DISPLAY_SPI_BUFFER_SIZE),
-            ..Default::default()
-        },
-    )?;
+    // LCD 设备：40 MHz。SD 设备是 20 MHz，CS 分开所以互不影响。
     let spi_dev = SpiDeviceDriver::new(
-        spi_driver,
-        Some(cs), // CS
+        shared_spi_bus,
+        Some(cs), // CS (GPIO5) — 和 SD 卡 GPIO9 独立
         &SpiConfig::new().baudrate(40_000_000.into()),
     )?;
 
@@ -82,16 +82,16 @@ pub fn init_display_gc9a01(
     let di = SpiInterface::new(spi_dev, dc, buffer);
 
     let mut delay = Delay::new_default();
-    let display = Builder::new(GC9A01, di)
+    let display = Builder::new(ST7789, di)
         .reset_pin(rst)
-        .invert_colors(ColorInversion::Inverted)
-        .color_order(ColorOrder::Rgb)
+        .invert_colors(ColorInversion::Normal)
+        .color_order(ColorOrder::Bgr)
         .orientation(Orientation::new().rotate(mipidsi::options::Rotation::Deg0))
         .refresh_order(RefreshOrder::new(
             mipidsi::options::VerticalRefreshOrder::TopToBottom,
             mipidsi::options::HorizontalRefreshOrder::LeftToRight,
         ))
-        .display_size(240, 240)
+        .display_size(240, 320)
         .display_offset(0, 0)
         .init(&mut delay)
         .map_err(|e| anyhow!("display init failed: {:?}", e))?;

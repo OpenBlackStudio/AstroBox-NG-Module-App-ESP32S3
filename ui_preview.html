@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AstroBox-NG Module UI Preview (240×320)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; align-items: flex-start;
+    min-height: 100vh; background: #1a1b1e; font-family: 'Inter', 'Segoe UI', sans-serif;
+    padding: 40px 20px;
+  }
+  .label { color: #888; font-size: 13px; text-align: center; margin-top: 8px; }
+
+  /* ===== 屏幕 240×320 容器 ===== */
+  .screen {
+    width: 240px; height: 320px; position: relative; overflow: hidden;
+    background: #000; border-radius: 12px; box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  }
+  .screen > * { position: absolute; }
+
+  /* ===== 字体 ===== */
+  .font-inter { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; }
+  .font-sc    { font-family: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', sans-serif; }
+
+  /* ===== 公共 ===== */
+  .text { display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ===== 1. 已连接主界面 ===== */
+  #state-connected { display: none; }
+
+  /* LED 连接点 */
+  .led { width: 6px; height: 6px; border-radius: 3px; }
+  .led.on  { background: #fff; }
+  .led.off { background: #4E5054; }
+
+  /* 电池 */
+  .battery-shell {
+    width: 27px; height: 13px; border: 1.1px solid rgba(255,255,255,0.55);
+    border-radius: 2px; position: relative; opacity: 0.75;
+  }
+  .battery-fill { position: absolute; left: 2px; top: 2px; height: 8.8px; border-radius: 1px; background: #fff; }
+  .battery-tip  { position: absolute; left: 27px; top: 4.3px; width: 2.2px; height: 4.3px; border-radius: 1px; background: rgba(255,255,255,0.55); }
+
+  /* 分割线 */
+  .divider { height: 1px; background: rgba(255,255,255,0.1); }
+
+  /* 品牌点 */
+  .brand-dot { width: 6.5px; height: 6.5px; background: #6db8ff; border-radius: 50%; }
+
+  /* ⚙ 设置按钮 */
+  .settings-btn {
+    width: 34px; height: 34px; border-radius: 17px; background: #2F3136;
+    opacity: 0.95; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; user-select: none; transition: transform 0.15s;
+  }
+  .settings-btn:active { transform: scale(0.92); }
+  .settings-btn span { font-size: 20px; color: #fff; font-weight: 500; }
+
+  /* ===== 2. 资源面板 ===== */
+  #state-panel { display: none; background: #18191B; }
+  .panel-topbar { width: 240px; height: 34px; background: #202124; }
+  .panel-close { font-size: 20px; color: #fff; font-weight: 600; cursor: pointer; user-select: none; line-height: 26px; }
+  .panel-title { font-size: 15px; color: #fff; font-weight: 600; }
+
+  .tab-btn {
+    width: 110px; height: 26px; border-radius: 6px; cursor: pointer; user-select: none;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: #fff; font-weight: 550; transition: background 0.2s;
+  }
+  .tab-btn.active { background: #3b82f6; }
+  .tab-btn:not(.active) { background: #2a2b2e; }
+
+  .list-row {
+    width: 224px; height: 38px; border-radius: 6px; background: #232428;
+    display: flex; align-items: center; padding: 0 10px; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .list-row:hover { background: #2e2f34; }
+  .list-row .txt { font-size: 13px; color: rgba(255,255,255,0.95); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 204px; }
+
+  .page-btn {
+    width: 36px; height: 24px; border-radius: 6px; background: #2a2b2e;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    font-size: 12px; color: #fff; user-select: none;
+  }
+
+  /* ===== 3. 断连呼吸 ===== */
+  #state-disconnected { display: none; }
+  .pulse-dot {
+    width: 12px; height: 12px; border-radius: 6px; background: #f0d872;
+    animation: pulse 1.1s ease-in-out infinite alternate;
+  }
+  @keyframes pulse {
+    0%   { opacity: 0.28; }
+    100% { opacity: 1.0; }
+  }
+  .pulse-text {
+    font-size: 16px; color: #fff; font-weight: 520;
+    animation: pulse-text-anim 1.1s ease-in-out infinite alternate;
+  }
+  @keyframes pulse-text-anim {
+    0%   { opacity: 0.55; }
+    100% { opacity: 1.0; }
+  }
+
+  /* 进度文本（通用） */
+  .progress-text { font-size: 12px; color: #9df0c3; opacity: 0.9; text-align: center; }
+
+  /* 切换按钮 */
+  .switcher { display: flex; flex-direction: column; gap: 8px; }
+  .switcher button {
+    padding: 8px 16px; border: 1px solid #444; border-radius: 6px; background: #2a2b2e;
+    color: #ddd; font-size: 13px; cursor: pointer; min-width: 120px; text-align: center;
+  }
+  .switcher button.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  .switcher button:hover { border-color: #3b82f6; }
+
+  .wrapper { display: flex; flex-direction: column; align-items: center; }
+</style>
+</head>
+<body>
+
+<!-- ===== 屏幕 ===== -->
+<div class="wrapper">
+  <div class="screen" id="screen">
+
+    <!-- ── 已连接主界面 ── -->
+    <div id="state-connected" style="width:240px;height:320px;">
+      <!-- LED 连接点 -->
+      <div class="led on"  style="left:88px;top:14px;"></div>
+      <div class="led off" style="left:103px;top:11px;"></div>
+      <div class="led off" style="left:117px;top:10px;"></div>
+      <div class="led off" style="left:131px;top:11px;"></div>
+      <div class="led off" style="left:145px;top:14px;"></div>
+
+      <!-- 电量 -->
+      <div class="text font-inter" style="left:45px;top:42px;width:34px;height:19px;font-size:14px;font-weight:500;color:rgba(255,255,255,0.75);letter-spacing:-0.8px;">87%</div>
+      <div class="battery-shell" style="left:83px;top:44px;">
+        <div class="battery-fill" style="width:18.3px;"></div>
+        <div class="battery-tip"></div>
+      </div>
+      <div class="text font-sc" style="left:116px;top:42px;width:78px;height:19px;font-size:14px;font-weight:450;color:rgba(255,255,255,0.75);">2天前充电</div>
+
+      <!-- 分割线 -->
+      <div class="divider" style="left:30px;top:75px;width:180px;"></div>
+
+      <!-- 设备名 -->
+      <div class="brand-dot" style="left:33px;top:105px;"></div>
+      <div class="text font-inter" style="left:30px;top:95px;width:180px;height:34px;font-size:18px;font-weight:600;color:#fff;letter-spacing:-0.5px;justify-content:center;">Mi Band 9</div>
+
+      <!-- 网络速度 -->
+      <div class="text font-inter" style="left:45px;top:160px;width:70px;height:20px;font-size:14px;font-weight:500;color:rgba(255,255,255,0.75);">1.2 KB/s ↑</div>
+      <div style="left:120px;top:164px;width:1px;height:14px;background:rgba(255,255,255,0.75);"></div>
+      <div class="text font-inter" style="left:125px;top:160px;width:70px;height:20px;font-size:14px;font-weight:500;color:rgba(255,255,255,0.75);">15.6 KB/s ↓</div>
+
+      <!-- 安装进度文本 -->
+      <div class="progress-text font-sc" style="left:10px;top:218px;width:220px;height:20px;">安装中... 67%</div>
+
+      <!-- ⚙ 设置按钮 -->
+      <div class="settings-btn" style="left:103px;top:270px;" onclick="switchState('panel')" title="长按呼出资源面板">
+        <span>⚙</span>
+      </div>
+    </div>
+
+    <!-- ── 资源面板 ── -->
+    <div id="state-panel" style="width:240px;height:320px;">
+      <!-- 顶栏 -->
+      <div class="panel-topbar"></div>
+      <div class="panel-close" style="left:10px;top:4px;width:26px;height:26px;text-align:center;" onclick="switchState('connected')">×</div>
+      <div class="panel-title font-sc" style="left:46px;top:6px;width:150px;height:24px;display:flex;align-items:center;">安装资源</div>
+
+      <!-- Tab 按钮 -->
+      <div class="tab-btn active font-sc" style="left:6px;top:38px;" onclick="switchTab(0)">本地 (SD)</div>
+      <div class="tab-btn font-sc" style="left:124px;top:38px;" onclick="switchTab(1)">AstroBox</div>
+
+      <!-- 进度/提示文本 -->
+      <div class="progress-text font-sc" style="left:8px;top:72px;width:224px;height:20px;" id="panel-progress">SD 扫描完成，共 3 项</div>
+
+      <!-- 列表 5 行 -->
+      <div class="list-row" style="left:8px;top:96px;" onclick="clickRow(0)"><div class="txt font-sc">[表盘] aurora.mwz (128 KB)</div></div>
+      <div class="list-row" style="left:8px;top:136px;" onclick="clickRow(1)"><div class="txt font-sc">[快应用] 倒数日.rpk (45 KB)</div></div>
+      <div class="list-row" style="left:8px;top:176px;" onclick="clickRow(2)"><div class="txt font-sc">[插件] demo.abp v0.1.0</div></div>
+      <div class="list-row" style="left:8px;top:216px;opacity:0.4;"><div class="txt font-sc"></div></div>
+      <div class="list-row" style="left:8px;top:256px;opacity:0.4;"><div class="txt font-sc"></div></div>
+
+      <!-- 底部分页 + 统计 -->
+      <div class="font-sc" style="left:10px;top:298px;width:130px;height:20px;font-size:12px;color:rgba(255,255,255,0.6);display:flex;align-items:center;" id="page-info">共 3 项, 页 1</div>
+      <div class="page-btn font-sc" style="left:150px;top:294px;" onclick="prevPage()">上一页</div>
+      <div class="page-btn font-sc" style="left:190px;top:294px;" onclick="nextPage()">下一页</div>
+    </div>
+
+    <!-- ── 断连状态 ── -->
+    <div id="state-disconnected" style="width:240px;height:320px;">
+      <div class="pulse-dot" style="left:70px;top:154px;"></div>
+      <div class="pulse-text font-sc" style="left:88px;top:148px;width:82px;height:24px;display:flex;align-items:center;">等待连接...</div>
+    </div>
+
+  </div>
+  <div class="label">AstroBox-NG Module · 240×320 ST7789</div>
+</div>
+
+<!-- ===== 状态切换器 ===== -->
+<div class="switcher">
+  <button class="active" onclick="switchState('connected')">已连接主界面</button>
+  <button onclick="switchState('panel')">资源安装面板</button>
+  <button onclick="switchState('disconnected')">断连呼吸灯</button>
+  <div style="height:16px;"></div>
+  <button onclick="switchTab(0)" id="tab0-btn">Tab: 本地(SD)</button>
+  <button onclick="switchTab(1)" id="tab1-btn">Tab: AstroBox</button>
+</div>
+
+<script>
+  function switchState(state) {
+    document.getElementById('state-connected').style.display = state === 'connected' ? 'block' : 'none';
+    document.getElementById('state-panel').style.display = state === 'panel' ? 'block' : 'none';
+    document.getElementById('state-disconnected').style.display = state === 'disconnected' ? 'block' : 'none';
+
+    // 更新切换按钮 active 状态
+    document.querySelectorAll('.switcher button').forEach((btn, i) => {
+      if (i < 3) btn.classList.toggle('active', btn.textContent.includes(
+        state === 'connected' ? '已连接' : state === 'panel' ? '资源' : '断连'
+      ));
+    });
+  }
+
+  function switchTab(idx) {
+    document.querySelectorAll('#state-panel .tab-btn').forEach((btn, i) => {
+      btn.classList.toggle('active', i === idx);
+    });
+    document.getElementById('tab0-btn').classList.toggle('active', idx === 0);
+    document.getElementById('tab1-btn').classList.toggle('active', idx === 1);
+
+    const progress = document.getElementById('panel-progress');
+    if (idx === 0) {
+      progress.textContent = 'SD 扫描完成，共 3 项';
+    } else {
+      progress.textContent = 'AstroBox 源：12 条（已过滤付费）';
+    }
+  }
+
+  function clickRow(row) {
+    const progress = document.getElementById('panel-progress');
+    const rows = document.querySelectorAll('#state-panel .list-row');
+    if (rows[row] && rows[row].style.opacity !== '0.4') {
+      const txt = rows[row].querySelector('.txt').textContent;
+      progress.textContent = '安装中: ' + txt + ' ... 0%';
+      setTimeout(() => { progress.textContent = '安装中: ' + txt + ' ... 50%'; }, 800);
+      setTimeout(() => { progress.textContent = '安装完成: ' + txt; }, 2000);
+    }
+  }
+
+  let currentPage = 0;
+  function prevPage() {
+    if (currentPage > 0) currentPage--;
+    document.getElementById('page-info').textContent = '共 3 项, 页 ' + (currentPage + 1);
+  }
+  function nextPage() {
+    currentPage++;
+    document.getElementById('page-info').textContent = '共 3 项, 页 ' + (currentPage + 1);
+  }
+
+  // 初始
+  switchState('connected');
+</script>
+
+</body>
+</html>

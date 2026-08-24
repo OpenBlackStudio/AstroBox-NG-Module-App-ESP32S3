@@ -11,8 +11,15 @@ use corelib::{
     ecs,
 };
 use log::info;
-use std::path::Path;
-use tokio::fs;
+use std::path::{Path, PathBuf};
+use tokio::{fs, sync::mpsc};
+
+#[cfg(feature = "repo_net")]
+use crate::{
+    net_http,
+    repo::{RepoItem, RepoManifest, RepoType},
+    transfer::{TransferDirection, TransferProgress},
+};
 
 /// #19: Generic helper that encapsulates the recurring
 /// `ecs::with_rt_mut + oneshot + rt.with_device_mut` access pattern.
@@ -289,4 +296,209 @@ pub async fn send_phone_message(
         Ok(())
     })
     .await
+}
+
+// =====================================================================
+// 联网资源 → 安装流水线（feature repo_net）
+// =====================================================================
+
+/// 下载 + 安装；若 `cache_to_sd=true` 则同时落盘到
+/// `/sdcard/astrobox/cache/<slug>_<version>.<ext>`，下次命中时跳过
+/// 下载。
+///
+/// 进度：下载占 0%~50%，安装占 50%~100%。
+#[cfg(feature = "repo_net")]
+pub async fn install_from_repo(
+    addr: &str,
+    item: &RepoItem,
+    manifest: &RepoManifest,
+    cache_to_sd: bool,
+    sd_root: Option<&Path>,
+    progress_tx: Option<mpsc::Sender<TransferProgress>>,
+) -> anyhow::Result<()> {
+    use anyhow::anyhow;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // 1) 过滤三重保障（paid 再检查一次）
+    if !item.paid.is_free() {
+        return Err(anyhow!(
+            "install_from_repo: item {} is paid (合规过滤拒绝)",
+            item.name
+        ));
+    }
+    // 2) 选 payload URL
+    let Some(url) = manifest.payload_url(item.restype) else {
+        return Err(anyhow!(
+            "manifest has no download url for {:?} (item={})",
+            item.restype,
+            item.name
+        ));
+    };
+
+    // 3) 生成缓存路径（若可用）
+    let cache_path: Option<PathBuf> = match (cache_to_sd, sd_root) {
+        (true, Some(root)) => {
+            let slug = slugify(&item.name);
+            let version = manifest.version.clone().unwrap_or_else(|| "latest".into());
+            let ext = match item.restype {
+                RepoType::QuickApp => "rpk",
+                RepoType::Watchface => "mwz",
+            };
+            Some(
+                root.join("astrobox/cache")
+                    .join(format!("{slug}_{version}.{ext}")),
+            )
+        }
+        _ => None,
+    };
+
+    // 4) 命中缓存？(大小 ≥ manifest.filesize 阈值 99% 视为一致)
+    let cache_hit = match (&cache_path, manifest.filesize) {
+        (Some(p), Some(expected)) => match fs::metadata(p).await {
+            Ok(m) => m.len() >= expected.saturating_mul(99) / 100,
+            Err(_) => false,
+        },
+        (Some(p), None) => fs::metadata(p).await.is_ok_and(|m| m.len() > 0),
+        _ => false,
+    };
+
+    let total = manifest.filesize.map(|n| n as usize);
+    let file_name = item.name.clone();
+    let emit = |pct, cur| {
+        let tx = progress_tx.clone();
+        async move {
+            let Some(tx) = tx else { return };
+            let _ = tx
+                .send(TransferProgress {
+                    direction: TransferDirection::Send,
+                    progress_percent: pct,
+                    current_bytes: cur,
+                    total_bytes: total,
+                    file_name: file_name.clone(),
+                })
+                .await;
+        }
+    };
+
+    let local_bytes: Vec<u8> = if cache_hit {
+        let p = cache_path.as_ref().unwrap();
+        info!(
+            "[Repo] cache hit: {}, install directly from SD",
+            p.display()
+        );
+        emit(50.0, total.unwrap_or(0)).await;
+        fs::read(p)
+            .await
+            .map_err(|e| anyhow!("read cached package {}: {e:#}", p.display()))?
+    } else {
+        // 下载
+        let current = AtomicU64::new(0);
+        let total_arc = std::sync::Arc::new(total);
+        if let Some(p) = &cache_path {
+            // 方式 A：流式写文件 + 后续读文件
+            let _ = crate::sdcard::ensure_dir(p.parent().expect("cache in astrobox/cache"));
+            let p_clone = p.clone();
+            let total_for_cb = *total_arc;
+            let downloaded = crate::net_http::download_to_file(url, p_clone.clone(), |cur, ttl| {
+                let ttl = ttl.or(total_for_cb);
+                let pct = 50.0
+                    * (match ttl {
+                        Some(0) | None => 0.0,
+                        Some(max) => (cur as f32 / max as f32).clamp(0.0, 1.0),
+                    });
+                current.store(cur as u64, Ordering::Relaxed);
+                let tx = progress_tx.clone();
+                // 这里同步上下文，不 .await；直接 best-effort try_send
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(TransferProgress {
+                        direction: TransferDirection::Send,
+                        progress_percent: pct,
+                        current_bytes: cur,
+                        total_bytes: ttl,
+                        file_name: file_name.clone(),
+                    });
+                }
+            })
+            .await?;
+            emit(50.0, downloaded as usize).await;
+            fs::read(p)
+                .await
+                .map_err(|e| anyhow!("read downloaded package {}: {e:#}", p.display()))?
+        } else {
+            // 方式 B：直接进内存
+            let tx_for_cb = progress_tx.clone();
+            let total_local = total;
+            let bytes = net_http::get_bytes_with_progress(url, move |cur, ttl| {
+                let ttl = ttl.or(total_local);
+                let pct = 50.0
+                    * (match ttl {
+                        Some(0) | None => 0.0,
+                        Some(max) => (cur as f32 / max as f32).clamp(0.0, 1.0),
+                    });
+                current.store(cur as u64, Ordering::Relaxed);
+                if let Some(tx) = tx_for_cb.as_ref() {
+                    let _ = tx.try_send(TransferProgress {
+                        direction: TransferDirection::Send,
+                        progress_percent: pct,
+                        current_bytes: cur,
+                        total_bytes: ttl,
+                        file_name: file_name.clone(),
+                    });
+                }
+            })
+            .await?;
+            emit(50.0, bytes.len()).await;
+            bytes
+        }
+    };
+
+    // 5) 安装（50% → 100%）
+    emit(51.0, local_bytes.len()).await;
+    match item.restype {
+        RepoType::QuickApp => {
+            let pkg = manifest
+                .package_name
+                .clone()
+                .or_else(|| item.manifest_path.rsplit('/').next().map(|s| s.trim_end_matches(".json").to_string()))
+                .unwrap_or_else(|| slugify(&item.name));
+            install_quick_app(addr, &pkg, local_bytes).await?;
+        }
+        RepoType::Watchface => {
+            install_watchface(addr, local_bytes).await?;
+        }
+    }
+    emit(100.0, total.unwrap_or(0)).await;
+    Ok(())
+}
+
+#[cfg(feature = "repo_net")]
+fn slugify(s: &str) -> String {
+    // 非字母数字字符 → "_"，限制长度 64。
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    out.truncate(64);
+    if out.is_empty() {
+        "item".into()
+    } else {
+        out
+    }
+}
+
+#[cfg(feature = "repo_net")]
+#[cfg(test)]
+mod tests {
+    use super::slugify;
+
+    #[test]
+    fn slugify_works() {
+        assert_eq!(slugify("倒数日 快应用 (v1.0)"), "____________v1_0_");
+        assert_eq!(slugify("HyperBili"), "hyperbili");
+        assert_eq!(slugify(""), "item");
+    }
 }

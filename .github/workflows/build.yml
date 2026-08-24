@@ -79,8 +79,10 @@ jobs:
         run: |
           cargo install espup
           espup install esp32s3
+          espup toolchain install esp32s3
+          # Install the esp rust toolchain (provides xtensa target + ldproxy)
+          espup toolchain install esp32s3
           cargo install espflash
-          cargo install ldproxy
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -225,6 +227,7 @@ jobs:
         run: |
           cargo install espup
           espup install esp32s3
+          espup toolchain install esp32s3
 
       - name: Cache
         uses: actions/cache@v4
@@ -266,6 +269,7 @@ jobs:
         run: |
           cargo install espup
           espup install esp32s3
+          espup toolchain install esp32s3
 
       - name: Cache
         uses: actions/cache@v4

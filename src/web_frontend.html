@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroBox-NG 网页控制台</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--txt:#e2e8f0;--accent:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--mute:#94a3b8}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,Segoe UI,Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);line-height:1.5}
+nav{display:flex;gap:8px;padding:12px 16px;background:#0b1220;border-bottom:1px solid #1e293b;position:sticky;top:0;z-index:10;flex-wrap:wrap}
+nav button{background:transparent;border:1px solid #334155;color:var(--txt);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px}
+nav button.active{background:var(--accent);color:#05111d;border-color:var(--accent);font-weight:600}
+main{padding:20px;max-width:1100px;margin:0 auto}
+.card{background:var(--card);border:1px solid #334155;border-radius:12px;padding:16px;margin-bottom:16px}
+.card h2{margin:0 0 12px;font-size:18px;display:flex;align-items:center;justify-content:space-between}
+h2 small{color:var(--mute);font-weight:400;font-size:12px}
+.grid{display:grid;gap:12px}
+.grid.cols-3{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.stat{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#0f172a;border-radius:8px}
+.stat label{color:var(--mute);font-size:12px}
+.stat value{font-size:16px;font-weight:600}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}.acc{color:var(--accent)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input[type=text],input[type=password],input[type=number],select,textarea{background:#0f172a;color:var(--txt);border:1px solid #334155;border-radius:8px;padding:8px 12px;font-size:14px;width:100%;max-width:400px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#05111d;border:none;border-radius:8px;padding:8px 16px;font-size:14px;font-weight:600;cursor:pointer}
+button.primary:disabled{background:#475569;color:#94a3b8;cursor:not-allowed}
+button.ghost{background:transparent;color:var(--txt);border:1px solid #334155;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+.resitem{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;transition:.15s}
+.resitem:hover{border-color:var(--accent)}
+.resitem .name{font-weight:600;font-size:15px;margin-bottom:6px}
+.resitem .meta{color:var(--mute);font-size:12px;margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap}
+.tag{background:#1e293b;color:#94a3b8;border-radius:4px;padding:2px 8px;font-size:11px;border:1px solid #334155}
+.tag.src-ab{background:rgba(56,189,248,.1);color:#7dd3fc;border-color:rgba(56,189,248,.3)}
+.tag.src-local{background:rgba(34,197,94,.1);color:#4ade80;border-color:rgba(34,197,94,.3)}
+.tag.type-qapp{background:rgba(168,85,247,.1);color:#c4b5fd;border-color:rgba(168,85,247,.3)}
+.tag.type-wf{background:rgba(236,72,153,.1);color:#f9a8d4;border-color:rgba(236,72,153,.3)}
+.logbox{background:#020617;color:#93c5fd;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;padding:12px;border-radius:8px;height:220px;overflow:auto;white-space:pre-wrap;border:1px solid #1e293b}
+.dropzone{border:2px dashed #475569;border-radius:10px;padding:28px;text-align:center;color:var(--mute);cursor:pointer;transition:.15s}
+.dropzone.drag,.dropzone:hover{border-color:var(--accent);color:var(--accent)}
+.devlist{display:flex;flex-direction:column;gap:8px}
+.dev{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center}
+.dev .addr{font-family:ui-monospace,Menlo,monospace;color:var(--mute);font-size:12px}
+.status-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}
+.dot-on{background:var(--ok)}.dot-off{background:var(--err)}.dot-uk{background:var(--mute)}
+.page{display:none}
+.page.active{display:block}
+.muted{color:var(--mute);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #334155}
+th{color:var(--mute);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+tr:hover td{background:rgba(56,189,248,.04)}
+</style>
+</head>
+<body>
+<nav>
+  <button data-tab="status" class="active">状态</button>
+  <button data-tab="resources">资源</button>
+  <button data-tab="upload">上传</button>
+  <button data-tab="devices">设备</button>
+  <button data-tab="account">小米账号</button>
+  <button data-tab="plugins">插件</button>
+</nav>
+<main>
+
+<!-- ==================== 状态 ==================== -->
+<section id="tab-status" class="page active">
+  <div class="card"><h2>系统状态 <small id="statsTs"></small></h2>
+    <div class="grid cols-3">
+      <div class="stat"><label>Wi-Fi</label><value id="st-wifi" class="muted">—</value></div>
+      <div class="stat"><label>IP</label><value id="st-ip" class="acc">—</value></div>
+      <div class="stat"><label>已连接 BLE</label><value id="st-ble" class="acc">—</value></div>
+      <div class="stat"><label>SD 卡空间</label><value id="st-sd" class="muted">—</value></div>
+      <div class="stat"><label>固件版本</label><value id="st-fw" class="muted">—</value></div>
+      <div class="stat"><label>构建时间</label><value id="st-ts" class="muted">—</value></div>
+    </div>
+  </div>
+  <div class="card"><h2>操作日志</h2><div class="logbox" id="logBox"></div>
+    <div class="row" style="margin-top:10px"><button class="ghost" onclick="clearLog()">清空</button></div>
+  </div>
+</section>
+
+<!-- ==================== 资源 ==================== -->
+<section id="tab-resources" class="page">
+  <div class="card"><h2>资源列表 <small id="resTs"></small></h2>
+    <div class="row" style="margin-bottom:12px">
+      <input id="resQ" placeholder="搜索名称…" style="max-width:240px">
+      <select id="resSrc"><option value="all">全部源</option><option value="AstroBox">AstroBox 官方</option><option value="本地">本地用户</option></select>
+      <select id="resType"><option value="all">全部类型</option><option value="quickapp">快应用</option><option value="watchface">表盘</option></select>
+      <button class="ghost" onclick="refreshResources()">刷新</button>
+      <span id="resCount" class="muted"></span>
+    </div>
+    <div id="resList" class="grid cols-3"></div>
+  </div>
+</section>
+
+<!-- ==================== 上传 ==================== -->
+<section id="tab-upload" class="page">
+  <div class="card"><h2>上传资源到本地源</h2>
+    <p class="muted">支持 <b>.rpk</b>（快应用）、<b>.mwz / .face</b>（表盘）、<b>.bin</b>（资源包）、<b>.abp</b>（插件）。上传后写入 SD 卡并登记到本地 index.csv，可在「资源」页立即安装。</p>
+    <div class="dropzone" id="dz">
+      <div style="font-size:28px;margin-bottom:8px">⬆</div>
+      点击选择文件，或拖文件到此处<br>
+      <span class="muted">单文件最大 16 MB</span>
+    </div>
+    <input type="file" id="file" style="display:none" multiple>
+    <div id="upList" style="margin-top:16px"></div>
+  </div>
+  <div class="card"><h2>登记参数</h2>
+    <div class="row"><label>适用设备 code（;分隔，留空=全部）：</label><input id="upDevs" placeholder="如 n67;o66"></div>
+    <p class="muted">上传时会按扩展名自动判别类型；name 取文件名 stem，paid_type 固定 free。</p>
+  </div>
+</section>
+
+<!-- ==================== 设备 ==================== -->
+<section id="tab-devices" class="page">
+  <div class="card"><h2>BLE 设备列表 <small id="devTs"></small></h2>
+    <div class="row" style="margin-bottom:10px"><button class="primary" onclick="refreshDevices()">刷新</button></div>
+    <div id="devList" class="devlist"></div>
+  </div>
+</section>
+
+<!-- ==================== 小米账号 ==================== -->
+<section id="tab-account" class="page">
+  <div class="card"><h2>小米账号</h2>
+    <div id="accStatus" class="muted">—</div>
+    <div id="accLoggedIn" style="display:none;margin-top:10px">
+      <div class="row"><button class="ghost" onclick="listMiDevices()">列出账号下设备</button><button class="ghost" onclick="logoutMi()">退出登录</button></div>
+      <div id="miDevList" style="margin-top:14px"></div>
+    </div>
+    <div id="accLoginForm" style="display:none;margin-top:10px">
+      <div class="grid" style="gap:10px;max-width:400px">
+        <input id="miUser" placeholder="小米账号（手机号/邮箱）">
+        <input id="miPass" type="password" placeholder="密码">
+        <button class="primary" onclick="loginMi()">密码登录</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 插件 ==================== -->
+<section id="tab-plugins" class="page">
+  <div class="card"><h2>已加载插件</h2>
+    <div class="row" style="margin-bottom:10px"><button class="ghost" onclick="refreshPlugins()">刷新</button></div>
+    <table>
+      <thead><tr><th>Name</th><th>Version</th><th>Entry</th><th>ID</th><th>操作</th></tr></thead>
+      <tbody id="plugBody"></tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+<script>
+// =============================================================
+// AstroBox-NG Web Console — vanilla, zero external deps.
+// API base = "" (served from the ESP32 HTTP server itself).
+// =============================================================
+
+const $ = id => document.getElementById(id);
+let qParams = new URLSearchParams(location.search);
+
+function log(line, level="info"){
+  const box = $("logBox"); if(!box) return;
+  const c = {info:"",ok:"color:#22c55e",warn:"color:#f59e0b",err:"color:#ef4444"}[level]||"";
+  const t = new Date().toLocaleTimeString();
+  box.innerHTML += `<span style="color:#64748b">[${t}]</span> ${c?`<span style="${c}">`:''}${escapeHtml(line)}${c?'</span>':''}\n`;
+  box.scrollTop = box.scrollHeight;
+}
+function clearLog(){ const b=$("logBox"); if(b) b.innerHTML=""; }
+function escapeHtml(s){ return (s??"").toString().replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]); }
+function humanBytes(n){ n=Number(n)||0; if(n<1024) return n+" B"; if(n<1048576) return (n/1024).toFixed(1)+" KB"; return (n/1048576).toFixed(1)+" MB"; }
+
+async function api(path, opts={}){
+  const url = (opts.base||"") + "/api" + path;
+  try {
+    const r = await fetch(url, {headers: {"Accept":"application/json"}, ...opts});
+    const t = await r.text();
+    let data = null;
+    try { data = t ? JSON.parse(t) : null; } catch {}
+    if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}: ${t.slice(0,160)}`);
+    return { ok:true, data, status:r.status };
+  } catch(e){
+    log("✗ "+e.message, "err");
+    return { ok:false, error:e.message, data:null, status:0 };
+  }
+}
+
+// ---------------- tabs ----------------
+document.querySelectorAll("nav button[data-tab]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    document.querySelectorAll("nav button[data-tab]").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
+    $("tab-"+b.dataset.tab).classList.add("active");
+    // per-tab refresh
+    if(b.dataset.tab==="status") refreshStatus();
+    else if(b.dataset.tab==="resources") refreshResources();
+    else if(b.dataset.tab==="devices") refreshDevices();
+    else if(b.dataset.tab==="account") refreshAccount();
+    else if(b.dataset.tab==="plugins") refreshPlugins();
+  });
+});
+
+// ---------------- status ----------------
+async function refreshStatus(){
+  const r = await api("/status");
+  if(!r.ok) return;
+  const s = r.data||{};
+  const wb = $("st-wifi"); wb.textContent = s.wifi_connected ? "已连接 ✔" : "未连接"; wb.className = s.wifi_connected ? "ok" : "err";
+  $("st-ip").textContent = s.ip || "—";
+  $("st-ble").textContent = (s.ble_connected_count ?? 0) + " 台";
+  $("st-sd").textContent = s.sd_mounted ? `${humanBytes(s.sd_free_bytes)} 可用 / ${humanBytes(s.sd_total_bytes)}` : "未挂载";
+  $("st-fw").textContent = s.fw_version || "—";
+  $("st-ts").textContent = s.build_time || "—";
+  const ts = new Date(s.updated_at*1000||Date.now()).toLocaleString();
+  $("statsTs").textContent = ts;
+}
+
+// ---------------- resources ----------------
+let cachedRes = [];
+function applyResFilter(){
+  const q = $("resQ").value.trim().toLowerCase();
+  const src = $("resSrc").value;
+  const ty = $("resType").value;
+  const items = cachedRes.filter(i=>{
+    if(q && !i.name.toLowerCase().includes(q)) return false;
+    if(src!=="all" && i.source!==src) return false;
+    const it = (i.restype||"").toLowerCase();
+    if(ty==="quickapp" && !it.startsWith("quick")) return false;
+    if(ty==="watchface" && !["watchface","face","watch_face"].includes(it)) return false;
+    return true;
+  });
+  $("resCount").textContent = `${items.length} 项`;
+  const box = $("resList"); box.innerHTML = "";
+  for(const it of items){
+    const typeClass = (it.restype||"").toLowerCase().startsWith("quick") ? "type-qapp" : "type-wf";
+    const srcClass = it.source === "AstroBox" ? "src-ab" : "src-local";
+    const srcName = it.source || "?";
+    const typeName = (it.restype||"?");
+    const el = document.createElement("div");
+    el.className = "resitem";
+    el.innerHTML = `
+      <div class="name">${escapeHtml(it.name)}</div>
+      <div class="meta">
+        <span class="tag ${srcClass}">${escapeHtml(srcName)}</span>
+        <span class="tag ${typeClass}">${escapeHtml(typeName)}</span>
+        ${it.devices && it.devices.length ? `<span class="tag">${it.devices.slice(0,3).map(escapeHtml).join("·")}${it.devices.length>3?"…":""}</span>`:""}
+      </div>
+      <div class="row"><button class="primary" data-name="${escapeHtml(it.name)}" data-id="${encodeURIComponent(it.manifest_path||"")}" data-type="${escapeHtml(it.restype||"")}" data-source="${escapeHtml(it.source||"")}">安装到首台已连接设备</button></div>
+    `;
+    el.querySelector("button").addEventListener("click", e => {
+      const d = e.currentTarget.dataset;
+      installResource(d.name, d.id, d.type, d.source);
+    });
+    box.appendChild(el);
+  }
+  if(!items.length) box.innerHTML = `<div class="muted">暂无匹配结果</div>`;
+}
+$("resQ").addEventListener("input", applyResFilter);
+$("resSrc").addEventListener("change", applyResFilter);
+$("resType").addEventListener("change", applyResFilter);
+
+async function refreshResources(){
+  $("resTs").textContent = "加载中…";
+  const r = await api("/resources");
+  if(!r.ok){ $("resTs").textContent = "失败"; return; }
+  cachedRes = (r.data||{}).items || [];
+  $("resTs").textContent = new Date().toLocaleString();
+  applyResFilter();
+}
+
+async function installResource(name, manifestEnc, restype, source){
+  log(`→ 安装：${name}（${source} / ${restype}）`,"info");
+  const body = JSON.stringify({ manifest_path: decodeURIComponent(manifestEnc), restype, source });
+  const r = await api("/install", { method:"POST", headers:{"Content-Type":"application/json"}, body });
+  if(r.ok){ log(`✔ ${name} 安装请求已发送`,"ok"); }
+  else { log(`✗ ${name} 安装失败：${r.error}`,"err"); }
+}
+
+// ---------------- upload ----------------
+const dz = $("dz"), fileInput=$("file");
+dz.addEventListener("click",()=>fileInput.click());
+["dragenter","dragover"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add("drag")}));
+["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("drag")}));
+dz.addEventListener("drop",e=>{handleFiles(e.dataTransfer.files)});
+fileInput.addEventListener("change",()=>handleFiles(fileInput.files));
+
+function extOf(name){ const p=name.lastIndexOf("."); return p<0?"":name.slice(p+1).toLowerCase(); }
+function restypeOf(ext){
+  if(ext==="rpk") return "quickapp";
+  if(ext==="mwz"||ext==="face") return "watchface";
+  if(ext==="abp") return "plugin";
+  if(ext==="bin") return "resource";
+  return null;
+}
+
+function handleFiles(files){
+  const list = $("upList"); list.innerHTML="";
+  for(const f of files){
+    const ext = extOf(f.name);
+    const rt = restypeOf(ext);
+    const row = document.createElement("div");
+    row.className = "card";
+    row.style.padding = "12px";
+    row.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <div style="min-width:0">
+          <div style="font-weight:600">${escapeHtml(f.name)}</div>
+          <div class="muted">${humanBytes(f.size)} · ${rt?rt:"未知类型"} · ext=${ext||"(无)"}</div>
+          <div id="p${f.lastModified||""}_${f.size}" style="margin-top:4px" class="muted"></div>
+        </div>
+        <button class="primary" ${rt?"":'disabled title="未知类型，跳过"'}>上传</button>
+      </div>`;
+    const btn = row.querySelector("button");
+    if(rt) btn.addEventListener("click",()=>uploadFile(f,rt,row));
+    list.appendChild(row);
+  }
+}
+
+async function uploadFile(f, restype, row){
+  if(f.size > 16*1024*1024){ log(`✗ ${f.name} 超过 16 MB`,"err"); return; }
+  const btn = row.querySelector("button");
+  btn.disabled = true; btn.textContent = "上传中…";
+  const devices = $("upDevs").value.trim();
+  log(`↑ 上传 ${f.name} → ${restype} (${humanBytes(f.size)})`,"info");
+  const fd = new FormData();
+  fd.append("file", f, f.name);
+  fd.append("restype", restype);
+  if(devices) fd.append("devices", devices);
+  try {
+    const r = await fetch("/api/upload", {method:"POST", body: fd});
+    const t = await r.text();
+    let data=null; try { data = JSON.parse(t); } catch{}
+    if(!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}: ${t.slice(0,160)}`);
+    log(`✔ 已登记：${(data&&data.item&&data.item.name)||f.name}（${(data&&data.item&&data.item.source)||"本地"}）`,"ok");
+    btn.textContent = "完成"; btn.classList.remove("primary"); btn.classList.add("ghost");
+  } catch(e){
+    log(`✗ 上传失败：${e.message}`,"err");
+    btn.disabled=false; btn.textContent = "重试";
+  }
+}
+
+// ---------------- devices ----------------
+async function refreshDevices(){
+  $("devTs").textContent = "加载中…";
+  const r = await api("/devices");
+  $("devTs").textContent = new Date().toLocaleString();
+  const list = $("devList"); list.innerHTML = "";
+  if(!r.ok){ return; }
+  const d = (r.data||{}).devices || [];
+  if(!d.length){ list.innerHTML = `<div class="muted">暂无设备。请用物理按键 / 蓝牙面板使 ESP32 与手环配对。</div>`; return; }
+  for(const dev of d){
+    const el = document.createElement("div"); el.className = "dev";
+    el.innerHTML = `
+      <div>
+        <span class="status-dot ${dev.connected?'dot-on':'dot-off'}"></span>
+        <b>${escapeHtml(dev.name||"(未命名)")}</b>
+        <div class="addr">${escapeHtml(dev.address||"")} ${dev.model?`· ${escapeHtml(dev.model)}`:""}</div>
+      </div>
+      <div class="row">
+        <button class="ghost" onclick="devOp('${encodeURIComponent(dev.address||"")}','list_qas')">列快应用</button>
+        <button class="ghost" onclick="devOp('${encodeURIComponent(dev.address||"")}','list_wfs')">列表盘</button>
+      </div>`;
+    list.appendChild(el);
+  }
+}
+async function devOp(addrEnc, op){
+  const addr = decodeURIComponent(addrEnc);
+  const r = await api(`/device/${op}?addr=${encodeURIComponent(addr)}`);
+  if(!r.ok){ alert("请求失败："+r.error); return; }
+  const d = r.data || {};
+  const title = op==="list_qas"?"已装快应用":"已装表盘";
+  const items = (d.items||[]).join("\n  · ") || "(空)";
+  alert(`${title}（${addr}）：\n  · ${items}`);
+}
+
+// ---------------- account ----------------
+async function refreshAccount(){
+  const r = await api("/mi-account/status");
+  if(!r.ok){ $("accStatus").textContent = "× 无法获取状态："+r.error; return; }
+  const d = r.data || {};
+  $("accStatus").innerHTML = d.logged_in
+    ? `<span class="ok">✔ 已登录</span>：${escapeHtml(d.user||d.user_id||"(未知用户)")}`
+    : `<span class="warn">○ 未登录</span>（可填写下面表单登录，之后就能看到账号下绑定的手环）`;
+  $("accLoggedIn").style.display = d.logged_in ? "block" : "none";
+  $("accLoginForm").style.display = d.logged_in ? "none" : "block";
+}
+async function loginMi(){
+  const u = $("miUser").value.trim(), p = $("miPass").value;
+  if(!u||!p){ alert("请填写账号密码"); return; }
+  log(`→ 小米账号登录：${u}`,"info");
+  const r = await api("/mi-account/login-password", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({user:u,password:p})});
+  if(r.ok){ log(`✔ 登录成功`,"ok"); refreshAccount(); }
+  else { log(`✗ 登录失败：${r.error}`,"err"); }
+}
+async function logoutMi(){
+  log(`→ 退出小米账号…`,"info");
+  const r = await api("/mi-account/logout", {method:"POST"});
+  if(r.ok){ log(`✔ 已退出`,"ok"); $("miDevList").innerHTML=""; refreshAccount(); }
+}
+async function listMiDevices(){
+  log(`→ 拉取账号下设备…`,"info");
+  const r = await api("/mi-account/devices");
+  if(!r.ok) return;
+  const d = (r.data||{}).devices || [];
+  log(`✔ 共 ${d.length} 台`,"ok");
+  const box = $("miDevList");
+  if(!d.length){ box.innerHTML = `<div class="muted">账号下暂无设备</div>`; return; }
+  box.innerHTML = `<table><thead><tr><th>名称</th><th>型号</th><th>MAC</th><th>在线</th><th>DID</th></tr></thead>
+    <tbody>${d.map(x=>`<tr><td>${escapeHtml(x.name||"")}</td><td>${escapeHtml(x.model||"")}</td><td class="muted">${escapeHtml(x.mac||"")}</td><td>${x.is_online?'<span class="ok">✔</span>':'<span class="muted">—</span>'}</td><td class="muted">${escapeHtml(x.did||"")}</td></tr>`).join("")}</tbody></table>`;
+}
+
+// ---------------- plugins ----------------
+async function refreshPlugins(){
+  const r = await api("/plugins");
+  const body = $("plugBody"); body.innerHTML = "";
+  if(!r.ok){ return; }
+  const ps = (r.data||{}).plugins || [];
+  if(!ps.length){ body.innerHTML = `<tr><td colspan="5" class="muted">暂无已加载插件（上传 .abp 后在「上传」页上传，或 SD 卡放 /astrobox/packages/ 下加载）</td></tr>`; return; }
+  for(const p of ps){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${escapeHtml(p.name||"")}</td><td>${escapeHtml(p.version||"")}</td><td class="muted">${escapeHtml(p.entry||"")}</td><td class="muted" style="font-size:12px">${escapeHtml(p.id||"")}</td>
+      <td><button class="ghost" onclick="unloadPlugin('${encodeURIComponent(p.id||"")}')">卸载</button></td>`;
+    body.appendChild(tr);
+  }
+}
+async function unloadPlugin(idEnc){
+  const id = decodeURIComponent(idEnc);
+  log(`→ 卸载插件 ${id}`,"info");
+  const r = await api(`/plugins/${encodeURIComponent(id)}/unload`, {method:"POST"});
+  if(r.ok){ log(`✔ 已卸载`,"ok"); refreshPlugins(); }
+}
+
+// ---------------- boot ----------------
+async function boot(){
+  // /api/ping 作存在性检测（ESP32 热点下用户访问的是 ESP32 自己）
+  const p = await api("/ping");
+  if(p.ok && p.data){ $("st-fw").textContent = p.data.fw_version||"—"; $("st-ts").textContent = p.data.build_time||"—"; }
+  log(`✔ 已连接到 AstroBox-NG`,"ok");
+  refreshStatus();
+  setInterval(refreshStatus, 15000);
+}
+boot();
+</script>
+</body>
+</html>

@@ -52,6 +52,7 @@ jobs:
           cargo install espup
           # Install ESP-IDF and all required Rust targets for esp32s3
           espup install esp32s3
+          espup toolchain install esp32s3
 
       - name: Cache
         uses: actions/cache@v4

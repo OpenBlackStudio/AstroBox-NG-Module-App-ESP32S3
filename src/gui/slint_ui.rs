@@ -26,13 +26,77 @@ use slint::{
     },
     LogicalPosition, PhysicalSize, SharedString,
 };
+use tokio::sync::mpsc;
 
 use super::display::DisplayType;
 
 slint::include_modules!();
 
+// ===== 资源面板 UI → 主逻辑 的事件通道 =====
+//
+// 初始化一次：`take_resource_ui_event_rx()` 返回 rx（只返回一次，避免多消费者）。
+// 回调函数（Slint 线程）调用 `send_resource_event(ResourceUiEvent::...)`。
+// 事件携带的数据尽量轻量（索引 / tab 号），重数据由 main 侧查缓存。
+
+/// 资源面板上发生的用户事件。`usize` / `i32` 便于跨线程传。
+#[derive(Clone, Debug)]
+pub enum ResourceUiEvent {
+    /// 长按 ⚙ 按钮 → 要求打开 / 切换可见性
+    SettingsLongPressed,
+    /// 关闭按钮（面板顶部 ×）
+    ClosePanel,
+    /// Tab 切换：0=本地(SD), 1=AstroBox（原本的 2=米坛 因 BandBBS 合规已移除，不再发出）
+    SourceSwitched(i32),
+    /// 上一页
+    PrevPage,
+    /// 下一页
+    NextPage,
+    /// 点击列表某一行 (0..5)
+    RowPressed(i32),
+}
+
+static RESOURCE_EVENT_TX: OnceLock<mpsc::Sender<ResourceUiEvent>> = OnceLock::new();
+static RESOURCE_EVENT_RX_ONCE: OnceLock<Mutex<Option<mpsc::Receiver<ResourceUiEvent>>>> =
+    OnceLock::new();
+
+/// 创建资源事件 channel（容量 16，足够覆盖按键抖动）。返回的 receiver 只能被取一次；
+/// 第二次调用返回 `None`（上层应 panic 或忽略）。
+pub fn init_resource_ui_event_channel() -> Option<mpsc::Receiver<ResourceUiEvent>> {
+    let (tx, rx) = mpsc::channel::<ResourceUiEvent>(16);
+    let _ = RESOURCE_EVENT_TX.set(tx);
+    let _ = RESOURCE_EVENT_RX_ONCE.set(Mutex::new(Some(rx)));
+    take_resource_ui_event_rx()
+}
+
+/// 获取资源事件 Receiver（一次性）。
+pub fn take_resource_ui_event_rx() -> Option<mpsc::Receiver<ResourceUiEvent>> {
+    match RESOURCE_EVENT_RX_ONCE.get() {
+        Some(g) => match g.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_poisoned) => None,
+        },
+        None => None,
+    }
+}
+
+fn send_resource_event(event: ResourceUiEvent) {
+    if let Some(tx) = RESOURCE_EVENT_TX.get() {
+        // Slint 回调是同步的，用 try_send 避免阻塞 UI 线程。
+        // 满时丢弃旧事件（主逻辑消费速度跟不上时保守处理）。
+        match tx.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                log::debug!("ResourceUiEvent channel full; event dropped");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // receiver 端已经退出（罕见），忽略即可。
+            }
+        }
+    }
+}
+
 pub const DISPLAY_WIDTH: usize = 240;
-pub const DISPLAY_HEIGHT: usize = 240;
+pub const DISPLAY_HEIGHT: usize = 320;
 const MAX_PENDING_POINTER_EVENTS: usize = 64;
 const STATS_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const ENABLE_DEBUG_STATS: bool = false;
@@ -56,6 +120,13 @@ struct PendingUiUpdates {
     device_connected: Option<bool>,
     connected_device_count: Option<i32>,
     device_status: Option<DeviceStatusUi>,
+    // ---- 资源面板 ----
+    resource_panel_visible: Option<bool>,
+    repo_source_tab: Option<i32>,
+    list_items: Option<[String; 5]>,
+    list_page: Option<i32>,
+    list_total: Option<i32>,
+    install_progress_text: Option<String>,
     pointer_events: VecDeque<QueuedPointerEvent>,
 }
 
@@ -302,6 +373,27 @@ fn ensure_app() -> Result<()> {
     APP_INSTANCE.with(|cell| {
         if cell.borrow().is_none() {
             let app = App::new().map_err(|e| anyhow!("Failed to create Slint App: {:?}", e))?;
+
+            // ===== 注册资源面板回调（发送事件到 main 侧事件循环消费） =====
+            app.on_settings_long_pressed(|| {
+                send_resource_event(ResourceUiEvent::SettingsLongPressed);
+            });
+            app.on_resource_close(|| {
+                send_resource_event(ResourceUiEvent::ClosePanel);
+            });
+            app.on_source_switched(|tab| {
+                send_resource_event(ResourceUiEvent::SourceSwitched(tab));
+            });
+            app.on_list_prev_page(|| {
+                send_resource_event(ResourceUiEvent::PrevPage);
+            });
+            app.on_list_next_page(|| {
+                send_resource_event(ResourceUiEvent::NextPage);
+            });
+            app.on_list_item_pressed(|row| {
+                send_resource_event(ResourceUiEvent::RowPressed(row));
+            });
+
             app.show()
                 .map_err(|e| anyhow!("Failed to show Slint App: {:?}", e))?;
             cell.replace(Some(app));
@@ -449,8 +541,64 @@ pub fn set_device_status(status: DeviceStatusUi) {
     updates.device_status = Some(status);
 }
 
+// ===== 资源面板 setters（由 main.rs / repo 监听器调用） =====
+pub fn set_resource_panel_visible(visible: bool) {
+    let mut updates = match ui_updates().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    updates.resource_panel_visible = Some(visible);
+}
+
+pub fn set_repo_source_tab(tab: i32) {
+    let mut updates = match ui_updates().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    updates.repo_source_tab = Some(tab);
+}
+
+/// 设置列表 5 行显示文本；空串表示该行空。
+pub fn set_list_items(items: [String; 5]) {
+    let mut updates = match ui_updates().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    updates.list_items = Some(items);
+}
+
+pub fn set_list_page(page: i32, total: i32) {
+    let mut updates = match ui_updates().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    updates.list_page = Some(page);
+    updates.list_total = Some(total);
+}
+
+/// 设置安装 / 加载中文本（显示在面板进度条位置或主界面"安装进度文字"位置）。
+/// 空串表示清空。
+pub fn set_install_progress_text(text: String) {
+    let mut updates = match ui_updates().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    updates.install_progress_text = Some(text);
+}
+
 fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
-    let (touch_text, device_connected, connected_device_count, device_status, pointer_events) = {
+    let (
+        touch_text,
+        device_connected,
+        connected_device_count,
+        device_status,
+        pointer_events,
+        panel_visible,
+        tab,
+        list_items,
+        page_and_total,
+        progress_text,
+    ) = {
         let mut updates = match ui_updates().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -461,6 +609,16 @@ fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
             updates.connected_device_count.take(),
             updates.device_status.take(),
             mem::take(&mut updates.pointer_events),
+            updates.resource_panel_visible.take(),
+            updates.repo_source_tab.take(),
+            updates.list_items.take(),
+            match (updates.list_page.take(), updates.list_total.take()) {
+                (Some(p), Some(t)) => Some((p, t)),
+                (Some(p), None) => Some((p, -1)),
+                (None, Some(t)) => Some((-1, t)),
+                (None, None) => None,
+            },
+            updates.install_progress_text.take(),
         )
     };
 
@@ -469,6 +627,11 @@ fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
         && connected_device_count.is_none()
         && device_status.is_none()
         && pointer_events.is_empty()
+        && panel_visible.is_none()
+        && tab.is_none()
+        && list_items.is_none()
+        && page_and_total.is_none()
+        && progress_text.is_none()
     {
         return;
     }
@@ -490,6 +653,30 @@ fn apply_pending_ui_updates(window: &Rc<MinimalSoftwareWindow>) {
                 app.set_charge_text(SharedString::from(status.charge_text));
                 app.set_net_up_text(SharedString::from(status.net_up_text));
                 app.set_net_down_text(SharedString::from(status.net_down_text));
+            }
+            if let Some(vis) = panel_visible {
+                app.set_resource_panel(vis);
+            }
+            if let Some(t) = tab {
+                app.set_repo_source_tab(t);
+            }
+            if let Some(items) = list_items {
+                app.set_list_item_0(SharedString::from(items[0].clone()));
+                app.set_list_item_1(SharedString::from(items[1].clone()));
+                app.set_list_item_2(SharedString::from(items[2].clone()));
+                app.set_list_item_3(SharedString::from(items[3].clone()));
+                app.set_list_item_4(SharedString::from(items[4].clone()));
+            }
+            if let Some((p, t)) = page_and_total {
+                if p >= 0 {
+                    app.set_list_page(p);
+                }
+                if t >= 0 {
+                    app.set_list_total(t);
+                }
+            }
+            if let Some(ptext) = progress_text {
+                app.set_install_progress_text(SharedString::from(ptext));
             }
         }
     });
