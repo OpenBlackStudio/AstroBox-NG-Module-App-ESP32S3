@@ -22,6 +22,12 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
+      - name: Install esp toolchain (for rust-toolchain.toml targets)
+        run: |
+          cargo install espup
+          espup install esp32s3
+          espup toolchain install esp32s3
+
       - name: Check formatting
         run: |
           rustup component add rustfmt
@@ -84,6 +90,12 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install esp toolchain
+        run: |
+          cargo install espup
+          espup install esp32s3
+          espup toolchain install esp32s3
 
       - name: Run cargo audit
         run: |
